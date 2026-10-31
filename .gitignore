@@ -1,0 +1,11 @@
+node_modules/
+out/
+release/
+.tmp*/
+*.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+.npm-cache/
+.electron-cache/
+.electron-builder-cache/

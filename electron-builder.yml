@@ -1,0 +1,43 @@
+appId: com.subshell.app
+productName: Subshell
+copyright: Copyright © 2026 subshell
+
+directories:
+  output: release
+  buildResources: build
+
+# 使用本地已安装的 Electron，避免打包时重新下载
+electronDist: node_modules/electron/dist
+
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/*.ts'
+
+asar: true
+npmRebuild: false
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: portable
+      arch:
+        - x64
+    - target: nsis
+      arch:
+        - x64
+  artifactName: Subshell-${version}-portable.${ext}
+
+portable:
+  artifactName: Subshell-${version}-portable.exe
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Subshell
+  artifactName: Subshell-Setup-${version}.${ext}
