@@ -61,9 +61,11 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   target:
     - target: dmg
+      # 只构建 runner 原生架构（macos-latest 为 arm64）。交叉构建 x64 需要额外的
+      # Electron 运行时，而 electronDist 指向本地已安装的那一份，会产出错误架构。
+      # 需要 Intel 包时，单独加一个 x64 runner 或改用 electron-builder 自动下载。
       arch:
         - arm64
-        - x64
   artifactName: Subshell-${version}-${arch}.${ext}
   # 公证：配置 APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID 后改为 true，
   # 否则 macOS 首次打开会提示「无法验证开发者」。
