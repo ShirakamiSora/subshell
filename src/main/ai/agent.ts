@@ -6,6 +6,7 @@ import type {
   ApprovalDecision,
   ChatMessage,
   CommandAnalysis,
+  ProviderConfig,
   RiskLevel,
   ServerConfig,
 } from '../../shared/types';
@@ -18,6 +19,7 @@ import type { AuditStore } from '../store/audit';
 import type { SettingsStore } from '../store/settings';
 import type { ProviderStore } from '../store/provider-store';
 import type { MonitorService } from '../monitor/collector';
+import type { HealthService } from '../health/service';
 import { createProvider } from './providers';
 import type { Provider, ProviderMessage } from './providers/types';
 import { buildSystemPrompt } from './prompt';
@@ -38,13 +40,20 @@ const MAX_ROUNDS = 64;
 /** 单次任务的总时长上限，防止异常循环无限运行。 */
 const MAX_RUN_MS = 30 * 60 * 1000;
 const MAX_TOOL_RESULT = 4000;
+/** 单次模型调用的超时，避免模型端无响应时界面一直转圈。 */
+const CHAT_TIMEOUT_MS = 180_000;
+/** 单次调用预留的输出 token。 */
+const CHAT_MAX_TOKENS = 4096;
+/** 未配置 contextWindow 时假设的上下文长度。 */
+const DEFAULT_CONTEXT_WINDOW = 128_000;
 
 interface RunState {
   serverId: string;
   status: AgentRunStatus;
   abort: AbortController;
   pending: Map<string, (decision: ApprovalDecision) => void>;
-  allowedCommands: Set<string>;
+  /** 从体检报告「让 AI 修复」发起时携带的问题 ID，用于回写工单。 */
+  issueId?: string;
 }
 
 export interface AgentDeps {
@@ -57,6 +66,7 @@ export interface AgentDeps {
   settings: SettingsStore;
   providers: ProviderStore;
   monitor: MonitorService;
+  health: HealthService;
 }
 
 /**
@@ -66,6 +76,11 @@ export interface AgentDeps {
 export class AgentService extends EventEmitter {
   private runs = new Map<string, RunState>();
   private lastStates = new Map<string, AgentRunStatus>();
+  /**
+   * 会话级「始终允许该命令」白名单。按服务器保存，清空对话或重启应用时失效；
+   * 只对完全相同的命令字符串生效，不会放宽风险等级。
+   */
+  private sessionAllowed = new Map<string, Set<string>>();
 
   constructor(private readonly deps: AgentDeps) {
     super();
@@ -83,6 +98,8 @@ export class AgentService extends EventEmitter {
 
   clear(serverId: string): void {
     this.cancel(serverId);
+    this.sessionAllowed.delete(serverId);
+    this.lastStates.delete(serverId);
     this.deps.chat.clear(serverId);
   }
 
@@ -95,7 +112,7 @@ export class AgentService extends EventEmitter {
     this.emitEvent({ type: 'run', payload: run.status });
   }
 
-  private resolveProvider(): { provider: Provider; configId: string } {
+  private resolveProvider(): { provider: Provider; config: ProviderConfig } {
     const settings = this.deps.settings.get();
     const configs = this.deps.providers.list();
     const config =
@@ -107,16 +124,16 @@ export class AgentService extends EventEmitter {
       throw new Error(`「${config.name}」没有保存 API Key，请到设置 → 模型服务商里重新填写并保存`);
     }
     const provider = createProvider(config, apiKey);
-    return { provider, configId: config.id };
+    return { provider, config };
   }
 
   /** 启动一次对话，立即返回消息 ID，循环在后台继续。 */
-  send(serverId: string, text: string): { messageId: string } {
+  send(serverId: string, text: string, issueId?: string): { messageId: string } {
     const trimmed = text.trim();
     if (!trimmed) throw new Error('消息不能为空');
     if (this.runs.has(serverId)) throw new Error('当前服务器已有正在运行的任务，请等待完成或先停止');
 
-    const { provider } = this.resolveProvider();
+    const { provider, config } = this.resolveProvider();
     const server = this.deps.servers.get(serverId);
     if (!server) throw new Error('服务器不存在');
 
@@ -125,7 +142,7 @@ export class AgentService extends EventEmitter {
       status: { serverId, state: 'thinking', round: 0 },
       abort: new AbortController(),
       pending: new Map(),
-      allowedCommands: new Set(),
+      issueId,
     };
     this.runs.set(serverId, run);
 
@@ -135,7 +152,7 @@ export class AgentService extends EventEmitter {
     this.emitEvent({ type: 'message', serverId, message: userMessage });
     this.emitRun(run, { state: 'thinking', round: 0 });
 
-    void this.runLoop(run, provider).catch((error) => {
+    void this.runLoop(run, provider, config).catch((error) => {
       if (run.abort.signal.aborted) {
         this.finishRun(run, 'cancelled');
         return;
@@ -144,6 +161,8 @@ export class AgentService extends EventEmitter {
       const message = error instanceof Error ? error.message : String(error);
       this.appendAssistantText(run, `⚠ 模型调用失败：${message}`);
       this.emitRun(run, { state: 'error', error: message });
+      // 保留错误状态，刷新界面后仍能看到失败原因。
+      this.lastStates.set(serverId, run.status);
       this.runs.delete(serverId);
     });
 
@@ -167,10 +186,11 @@ export class AgentService extends EventEmitter {
     this.emitEvent({ type: 'message', serverId: run.serverId, message });
   }
 
-  private async runLoop(run: RunState, provider: Provider): Promise<void> {
+  private async runLoop(run: RunState, provider: Provider, config: ProviderConfig): Promise<void> {
     const server = this.deps.servers.get(run.serverId);
     if (!server) throw new Error('服务器不存在');
     const startedAt = Date.now();
+    const budgetTokens = Math.max(16_000, Math.floor((config.contextWindow ?? DEFAULT_CONTEXT_WINDOW) * 0.6));
 
     for (let round = 1; round <= MAX_ROUNDS; round += 1) {
       if (run.abort.signal.aborted) return;
@@ -185,7 +205,10 @@ export class AgentService extends EventEmitter {
         this.buildContext(run.serverId, server),
         this.deps.settings.get().language,
       );
-      const messages = toProviderMessages(this.deps.chat.list(run.serverId), systemPrompt);
+      const messages = toProviderMessages(this.deps.chat.list(run.serverId), systemPrompt, {
+        budgetTokens,
+        reservedTokens: CHAT_MAX_TOKENS,
+      });
 
       const assistant: ChatMessage = {
         id: newMessageId(),
@@ -200,6 +223,8 @@ export class AgentService extends EventEmitter {
         messages,
         tools: TOOL_DEFINITIONS,
         signal: run.abort.signal,
+        timeoutMs: CHAT_TIMEOUT_MS,
+        maxTokens: CHAT_MAX_TOKENS,
         onDelta: (text) => {
           this.emitEvent({ type: 'delta', serverId: run.serverId, messageId: assistant.id, text });
         },
@@ -300,6 +325,7 @@ export class AgentService extends EventEmitter {
           risk: 'read',
           impact: parseError,
           needsApproval: false,
+          kind: 'read',
           blocked: parseError,
         }
       : prepareToolCall(name, args, toolCtx);
@@ -335,13 +361,14 @@ export class AgentService extends EventEmitter {
     }
 
     const settings = this.deps.settings.get();
+    const sessionAllowed = this.sessionAllowed.get(serverId) ?? new Set<string>();
     const autoApproved =
       !prepared.needsApproval ||
       (prepared.risk === 'read' && settings.autoApproveReadOnly) ||
-      // 智能审批：低风险变更（启动/重启/重载普通服务、更新档案）直接执行，
-      // 中高风险（停止服务、文件修改、任意命令）仍然必须确认。
-      (settings.approvalMode === 'smart' && prepared.risk === 'low') ||
-      (prepared.command ? run.allowedCommands.has(prepared.command) : false);
+      // 智能审批只放行「低风险的服务启停/重载」。写入档案、改文件、任意命令都必须确认，
+      // 否则模型可以通过 update_profile 把任意文本写进下次对话的系统提示。
+      (settings.approvalMode === 'smart' && prepared.risk === 'low' && prepared.kind === 'service') ||
+      (prepared.command ? sessionAllowed.has(prepared.command) : false);
 
     if (!autoApproved) {
       call.status = 'awaiting_approval';
@@ -356,7 +383,11 @@ export class AgentService extends EventEmitter {
         this.emitRun(run, { state: 'thinking' });
         return call;
       }
-      if (decision.always && prepared.command) run.allowedCommands.add(prepared.command);
+      if (decision.always && prepared.command) {
+        const next = new Set(sessionAllowed);
+        next.add(prepared.command);
+        this.sessionAllowed.set(serverId, next);
+      }
     }
 
     call.status = 'running';
@@ -373,6 +404,21 @@ export class AgentService extends EventEmitter {
     if (!result.ok && result.error) call.error = result.error;
 
     this.emitEvent({ type: 'tool', serverId, call: { ...call } });
+
+    // 从体检报告发起的修复，把执行结果记成工单，便于事后复盘「我对这个问题做过什么」。
+    if (run.issueId && prepared.kind !== 'read') {
+      this.deps.health.recordTicket({
+        id: newCallId(),
+        serverId,
+        issueId: run.issueId,
+        title: prepared.title,
+        action: prepared.name,
+        command: prepared.command,
+        ok: result.ok,
+        detail: (result.error || result.output || '').slice(0, 800),
+        ts: Date.now(),
+      });
+    }
 
     if (!['get_overview', 'list_services', 'list_ports', 'list_processes', 'inspect_service', 'read_logs', 'read_file', 'list_files', 'update_profile', 'finish'].includes(name)) {
       try {
@@ -502,40 +548,126 @@ export class AgentService extends EventEmitter {
   }
 }
 
-/** 把本地对话历史转换为模型消息，控制上下文长度并保留工具结果。 */
-export function toProviderMessages(history: ChatMessage[], system: string): ProviderMessage[] {
-  const userIndices = history
-    .map((message, index) => (message.role === 'user' ? index : -1))
-    .filter((index) => index >= 0);
-  const start = userIndices.length > 12 ? userIndices[userIndices.length - 12]! : 0;
-  const recent = history.slice(start);
+/** 粗略估算 token 数：CJK 按 1 token/字，拉丁文按约 3.6 字符/token。 */
+export function estimateTokens(text: string): number {
+  let wide = 0;
+  for (const char of text) {
+    if ((char.codePointAt(0) ?? 0) > 0x2e7f) wide += 1;
+  }
+  const narrow = text.length - wide;
+  return Math.ceil(wide + narrow / 3.6);
+}
+
+function messageTokens(message: ChatMessage): number {
+  let total = estimateTokens(message.content) + 8;
+  for (const call of message.toolCalls ?? []) {
+    total += estimateTokens(JSON.stringify(call.args ?? {})) + 16;
+    total += estimateTokens(call.stdout ?? '') + 8;
+  }
+  return total;
+}
+
+/**
+ * 单轮过长（一次任务几十条工具输出）时，从最早的工具段开始整段舍弃，
+ * 直到回到预算内。assistant 消息与其 tool 结果必须成对保留，否则模型协议会报错。
+ */
+function trimTurn(turn: ChatMessage[], allowance: number): ChatMessage[] {
+  let current = [...turn];
+  const cost = (list: ChatMessage[]) => list.reduce((sum, item) => sum + messageTokens(item), 0);
+  let trimmed = false;
+
+  // 本地历史里没有独立的 tool 消息，工具结果挂在 assistant.toolCalls 上，
+  // 所以按「整条 assistant 消息」删除即可保持上下文自洽。
+  while (cost(current) > allowance) {
+    const index = current.findIndex((message, position) => position > 0 && message.role === 'assistant');
+    if (index < 0 || index === current.length - 1) break;
+    current = [...current.slice(0, index), ...current.slice(index + 1)];
+    trimmed = true;
+  }
+
+  if (trimmed && current[0]) {
+    current[0] = {
+      ...current[0],
+      content: `${current[0].content}\n\n[上下文超长：本次任务早期步骤的工具输出已省略]`,
+    };
+  }
+  return current;
+}
+
+export interface MessageBuildOptions {
+  /** 允许送入模型的总 token 预算（含系统提示与预留输出）。 */
+  budgetTokens?: number;
+  /** 预留给模型输出的 token。 */
+  reservedTokens?: number;
+  /** 最多保留多少个用户轮次。 */
+  maxTurns?: number;
+}
+
+/** 把本地对话历史转换为模型消息，在 token 预算内保留最近的完整轮次。 */
+export function toProviderMessages(
+  history: ChatMessage[],
+  system: string,
+  options: MessageBuildOptions = {},
+): ProviderMessage[] {
+  const maxTurns = Math.max(1, options.maxTurns ?? 12);
+  const reserved = Math.max(1_024, options.reservedTokens ?? CHAT_MAX_TOKENS);
+  const budget = Math.max(8_000, options.budgetTokens ?? DEFAULT_CONTEXT_WINDOW);
+
+  // 按用户消息切轮，保证 assistant/tool 不会被从中间截断。
+  const turns: ChatMessage[][] = [];
+  for (const message of history) {
+    if (!turns.length || message.role === 'user') turns.push([message]);
+    else turns.at(-1)!.push(message);
+  }
+
+  let used = estimateTokens(system) + reserved;
+  const selected: ChatMessage[][] = [];
+  for (let index = turns.length - 1; index >= 0 && selected.length < maxTurns; index -= 1) {
+    const turn = turns[index]!;
+    const cost = turn.reduce((sum, message) => sum + messageTokens(message), 0);
+    if (selected.length > 0 && used + cost > budget) break;
+    selected.unshift(turn);
+    used += cost;
+  }
+
+  // 最新一轮本身也可能超出预算，此时在轮内裁剪。
+  const latest = selected[0];
+  if (latest) {
+    const rest = used - latest.reduce((sum, message) => sum + messageTokens(message), 0);
+    const allowance = Math.max(1_500, budget - rest);
+    if (latest.reduce((sum, message) => sum + messageTokens(message), 0) > allowance) {
+      selected[0] = trimTurn(latest, allowance);
+    }
+  }
 
   const messages: ProviderMessage[] = [{ role: 'system', content: system }];
-  for (const message of recent) {
-    if (message.role === 'user') {
-      messages.push({ role: 'user', content: message.content });
-      continue;
-    }
-    if (message.role !== 'assistant') continue;
-    if (!message.content.trim() && !message.toolCalls?.length) continue;
+  for (const turn of selected) {
+    for (const message of turn) {
+      if (message.role === 'user') {
+        messages.push({ role: 'user', content: message.content });
+        continue;
+      }
+      if (message.role !== 'assistant') continue;
+      if (!message.content.trim() && !message.toolCalls?.length) continue;
 
-    messages.push({
-      role: 'assistant',
-      content: message.content,
-      toolCalls: message.toolCalls?.map((call) => ({
-        id: call.id,
-        name: call.name,
-        arguments: JSON.stringify(call.args ?? {}),
-      })),
-    });
-
-    for (const call of message.toolCalls ?? []) {
       messages.push({
-        role: 'tool',
-        toolCallId: call.id,
-        name: call.name,
-        content: toolResultText(call),
+        role: 'assistant',
+        content: message.content,
+        toolCalls: message.toolCalls?.map((call) => ({
+          id: call.id,
+          name: call.name,
+          arguments: JSON.stringify(call.args ?? {}),
+        })),
       });
+
+      for (const call of message.toolCalls ?? []) {
+        messages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          name: call.name,
+          content: toolResultText(call),
+        });
+      }
     }
   }
   return messages;

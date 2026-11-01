@@ -8,15 +8,29 @@ export interface RiskAssessment {
 const BLOCKED: { pattern: RegExp; reason: string }[] = [
   { pattern: /rm\s+-[a-z]*r[a-z]*f[a-z]*\s+\/(?:\s|$|\*)/i, reason: '递归删除根目录' },
   { pattern: /rm\s+-[a-z]*f[a-z]*r[a-z]*\s+\/(?:\s|$|\*)/i, reason: '递归删除根目录' },
-  { pattern: /mkfs(\.|\s)/i, reason: '格式化文件系统' },
-  { pattern: /dd\s+.*of=\/dev\/(sd|nvme|hd|vd)/i, reason: '直接写入磁盘设备' },
+  { pattern: /--no-preserve-root/i, reason: '强制递归删除根目录' },
+  { pattern: /\bmkfs(\.|\s)/i, reason: '格式化文件系统' },
+  { pattern: /\bwipefs\b/i, reason: '擦除文件系统签名' },
+  { pattern: /\bdd\s+.*of=\/dev\/(sd|nvme|hd|vd)/i, reason: '直接写入磁盘设备' },
   { pattern: /:\s*\(\s*\)\s*\{.*\}\s*;?\s*:/, reason: 'Fork 炸弹' },
+  { pattern: /chmod\s+-R\s+0{3,4}\s+\/(?:\s|$)/i, reason: '递归清空根目录权限' },
   { pattern: /chmod\s+-R\s+0?777\s+\/(?:\s|$)/i, reason: '递归放开根目录权限' },
   { pattern: /(shutdown|poweroff|reboot|halt|init\s+[06])\b/i, reason: '关机或重启整机' },
   { pattern: /systemctl\s+isolate\s+(rescue|emergency)/i, reason: '切换到救援模式，会中断所有服务' },
   { pattern: /iptables\s+-F\b/i, reason: '清空防火墙规则' },
   { pattern: /userdel\s+-r\s+root/i, reason: '删除 root 用户' },
   { pattern: />\s*\/dev\/(sd|nvme|hd|vd)/i, reason: '直接覆盖磁盘设备' },
+  { pattern: />\s*\/boot\//i, reason: '覆盖引导分区文件，会导致系统无法启动' },
+];
+
+/**
+ * 嵌套命令：`sh -c '…'`、`eval '…'` 包裹一层就能绕过字面量正则。
+ * 这里把内层命令抽出来重新分级，任一层命中高危就整体升级。
+ */
+const NESTED_PATTERNS = [
+  /(?:^|[;&|(]\s*|\s)(?:ba|da|k|z)?sh\s+(?:-[A-Za-z]+\s+)*?-[A-Za-z]*c[A-Za-z]*\s+(['"])([\s\S]*?)\1/g,
+  /\beval\s+(['"])([\s\S]*?)\1/g,
+  /\b(?:python3?|perl|node)\s+-[ce]\s+(['"])([\s\S]*?)\1/g,
 ];
 
 const HIGH: { pattern: RegExp; reason: string }[] = [
@@ -31,6 +45,9 @@ const HIGH: { pattern: RegExp; reason: string }[] = [
   { pattern: />\s*\/etc\//i, reason: '覆盖系统配置文件' },
   { pattern: /\b(iptables|nft)\s+.*(-F|flush|delete)/i, reason: '修改防火墙规则' },
   { pattern: /\bapt(-get)?\s+(remove|purge|autoremove)|\byum\s+remove|\bdnf\s+remove/i, reason: '卸载软件包' },
+  { pattern: /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|k)?sh\b/i, reason: '下载并直接执行远程脚本' },
+  { pattern: /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(python3?|perl|node)\b/i, reason: '下载并直接执行远程代码' },
+  { pattern: /\bfind\s+\/\s.*(?:-delete|-exec\s+rm)\b/i, reason: '在根目录递归删除文件' },
 ];
 
 const MEDIUM: { pattern: RegExp; reason: string }[] = [
@@ -101,10 +118,35 @@ function isReadOnlySegment(segment: string): boolean {
 /**
  * 对 shell 命令做风险分级。模型不能降低本地判定：
  * 拦截项直接拒绝，高危与中危必须经用户审批。
+ *
+ * @param depth 递归深度，用于防止 `sh -c` 自嵌套造成无限递归。
  */
-export function classifyCommand(command: string): RiskAssessment {
+export function classifyCommand(command: string, depth = 0): RiskAssessment {
   const normalized = command.replace(/\s+/g, ' ').trim();
   if (!normalized) return { level: 'blocked', reasons: ['空命令'] };
+
+  // 先看内层：`sh -c 'rm -rf /'`、`eval "…"` 这类一层壳不应绕过判定。
+  // 注意：必须先把内层命令全部收集出来再递归。正则是模块级共享对象，
+  // 递归里重置 lastIndex 会让外层循环回到起点，造成死循环。
+  if (depth < 3) {
+    const nested: string[] = [];
+    for (const pattern of NESTED_PATTERNS) {
+      const scan = new RegExp(pattern.source, 'g');
+      for (const match of command.matchAll(scan)) {
+        const inner = (match[2] ?? '').trim();
+        if (inner && inner !== normalized) nested.push(inner);
+      }
+    }
+    for (const inner of nested) {
+      const result = classifyCommand(inner, depth + 1);
+      if (result.level === 'blocked' || result.level === 'high') {
+        return {
+          level: result.level,
+          reasons: [`嵌套命令（${result.reasons[0] ?? '高危操作'}）`],
+        };
+      }
+    }
+  }
 
   for (const item of BLOCKED) {
     if (item.pattern.test(normalized)) return { level: 'blocked', reasons: [item.reason] };
@@ -158,13 +200,17 @@ export function isSensitivePath(path: string): boolean {
   const lower = path.toLowerCase();
   return (
     /(^|\/)etc\/(shadow|gshadow|sudoers)(\.|$|\/)/.test(lower) ||
+    /(^|\/)etc\/ssl\/private(\/|$)/.test(lower) ||
     /(^|\/)\.ssh\/(id_|.*_key|.*\.pem)/.test(lower) ||
     /(^|\/)(id_rsa|id_ed25519|id_ecdsa|id_dsa)(\.|$)/.test(lower) ||
-    /\.(pem|key|p12|pfx)$/.test(lower) ||
+    /\.(pem|key|p12|pfx|kdbx)$/.test(lower) ||
     /(^|\/)\.env(\.|$)/.test(lower) ||
     /(^|\/)(credentials|secrets?)(\.|\/|$)/.test(lower) ||
     /(^|\/)\.aws\/credentials/.test(lower) ||
-    /(^|\/)\.kube\/config/.test(lower)
+    /(^|\/)\.kube\/config/.test(lower) ||
+    /(^|\/)\.git-credentials/.test(lower) ||
+    /(^|\/)\.(netrc|pgpass|my\.cnf|npmrc|pypirc)(\.|$)/.test(lower) ||
+    /(^|\/)\.docker\/config\.json/.test(lower)
   );
 }
 

@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from 'node:crypto';
-import { Server, type Connection, type ClientChannel } from 'ssh2';
+import { Server, type Connection } from 'ssh2';
 import type { ServerChannel } from 'ssh2';
 import { createLogger } from '../util/logger';
 

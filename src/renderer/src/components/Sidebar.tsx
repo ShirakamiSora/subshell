@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Plus, Search, Settings, Server } from 'lucide-react';
 import { useApp } from '../store/app';
 import { useI18n } from '../lib/i18n';
@@ -35,6 +35,8 @@ export function Sidebar() {
       map.set(key, list);
     }
     return [...map.entries()];
+    // t 只在分组默认名时使用；语言切换会重建组件，无需作为依赖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtered]);
 
   return (

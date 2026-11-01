@@ -234,6 +234,8 @@ export interface ProfileHistoryEntry {
 
 export interface ServerProfile {
   serverId: string;
+  /** 档案结构版本，用于升级时迁移旧文件 */
+  schemaVersion?: number;
   scannedAt: string;
   hostname: string;
   os: ProfileOs;
@@ -423,6 +425,14 @@ export interface AppSettings {
   terminalFontSize: number;
   /** 命令审计日志 */
   auditEnabled: boolean;
+  /** 是否启动内置 MCP 服务器（只监听 127.0.0.1） */
+  mcpEnabled: boolean;
+  /** MCP 服务器端口 */
+  mcpPort: number;
+  /** 是否允许外部 agent 通过 MCP 执行变更类工具 */
+  mcpAllowMutations: boolean;
+  /** 启动后自动检查新版本（只查询 GitHub Releases，不上报任何数据） */
+  autoCheckUpdate: boolean;
   /** 每百万输入 token 的价格（元），用于估算金额，手工填写 */
   inputPricePerMTok: number;
   /** 每百万输出 token 的价格（元），用于估算金额，手工填写 */
@@ -478,4 +488,97 @@ export interface RealtimePayload {
   services?: ServiceInfo[];
   ports?: PortInfo[];
   processes?: ProcessInfo[];
+}
+
+// ---------------------------------------------------------------------------
+// 体检报告与检修工单
+// ---------------------------------------------------------------------------
+
+export type IssueSeverity = 'critical' | 'warning' | 'info';
+export type IssueStatus = 'open' | 'resolved' | 'ignored';
+export type IssueSource = 'profile' | 'monitor' | 'service' | 'checklist';
+
+export interface HealthIssue {
+  id: string;
+  serverId: string;
+  severity: IssueSeverity;
+  source: IssueSource;
+  title: string;
+  detail: string;
+  /** 建议的处理动作，展示给用户与 AI */
+  suggestion: string;
+  /** 关联的服务名，便于一键定位 */
+  service?: string;
+  status: IssueStatus;
+  /** 同一问题被重新检测到的时间 */
+  updatedAt: number;
+}
+
+export interface HealthScore {
+  /** 0-100，越高越健康 */
+  score: number;
+  grade: 'excellent' | 'good' | 'fair' | 'poor';
+  critical: number;
+  warning: number;
+  info: number;
+}
+
+export interface HealthReport {
+  serverId: string;
+  generatedAt: number;
+  score: HealthScore;
+  issues: HealthIssue[];
+}
+
+/** 一次针对某个问题的处理记录（谁、做了什么、结果如何）。 */
+export interface TicketRecord {
+  id: string;
+  serverId: string;
+  issueId: string;
+  title: string;
+  action: string;
+  command?: string;
+  ok: boolean;
+  detail?: string;
+  ts: number;
+}
+
+// ---------------------------------------------------------------------------
+// 远程文件（SFTP）
+// ---------------------------------------------------------------------------
+
+export type RemoteEntryType = 'file' | 'directory' | 'symlink' | 'other';
+
+export interface RemoteEntry {
+  name: string;
+  /** 绝对路径 */
+  path: string;
+  type: RemoteEntryType;
+  size: number;
+  mode: number;
+  mtime: number;
+  /** 符号链接指向的目标（若有） */
+  linkTarget?: string;
+}
+
+// ---------------------------------------------------------------------------
+// 端口转发
+// ---------------------------------------------------------------------------
+
+export interface TunnelConfig {
+  id: string;
+  serverId: string;
+  label: string;
+  /** 本地监听端口（仅绑定 127.0.0.1） */
+  localPort: number;
+  /** 从服务器视角看到的目标地址 */
+  remoteHost: string;
+  remotePort: number;
+}
+
+export interface TunnelStatus extends TunnelConfig {
+  running: boolean;
+  connections: number;
+  since?: number;
+  error?: string;
 }

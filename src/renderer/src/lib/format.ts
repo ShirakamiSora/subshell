@@ -1,4 +1,4 @@
-import type { RiskLevel, ServiceState } from '@shared/types';
+import type { Language, RiskLevel, ServiceState } from '@shared/types';
 
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -19,44 +19,63 @@ export function formatPercent(value: number, digits = 0): string {
   return `${value.toFixed(digits)}%`;
 }
 
-export function formatDuration(seconds: number): string {
+export function formatDuration(seconds: number, language: Language = 'zh'): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '—';
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
+  if (language === 'en') {
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
+  }
   if (days > 0) return `${days} 天 ${hours} 小时`;
   if (hours > 0) return `${hours} 小时 ${minutes} 分`;
   return `${minutes} 分钟`;
 }
 
-export function formatRelative(ts: number): string {
+export function formatRelative(ts: number, language: Language = 'zh'): string {
   const diff = Date.now() - ts;
+  const minutes = Math.floor(diff / 60_000);
+  const hours = Math.floor(diff / 3_600_000);
+  const days = Math.floor(diff / 86_400_000);
+  if (language === 'en') {
+    if (diff < 60_000) return 'just now';
+    if (diff < 3_600_000) return `${minutes}m ago`;
+    if (diff < 86_400_000) return `${hours}h ago`;
+    return `${days}d ago`;
+  }
   if (diff < 60_000) return '刚刚';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  return `${Math.floor(diff / 86_400_000)} 天前`;
+  if (diff < 3_600_000) return `${minutes} 分钟前`;
+  if (diff < 86_400_000) return `${hours} 小时前`;
+  return `${days} 天前`;
 }
 
-export function formatTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false });
+function locale(language: Language): string {
+  return language === 'en' ? 'en-US' : 'zh-CN';
 }
 
-export function formatDateTime(ts: number | string): string {
+export function formatTime(ts: number, language: Language = 'zh'): string {
+  return new Date(ts).toLocaleTimeString(locale(language), { hour12: false });
+}
+
+export function formatDateTime(ts: number | string, language: Language = 'zh'): string {
   const date = typeof ts === 'string' ? new Date(ts) : new Date(ts);
   if (Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleString('zh-CN', { hour12: false });
+  return date.toLocaleString(locale(language), { hour12: false });
 }
 
-export function serviceStateLabel(state: ServiceState): string {
+/** 服务状态对应的 i18n key，组件里用 t() 渲染。 */
+export function serviceStateKey(state: ServiceState): string {
   switch (state) {
     case 'running':
-      return '运行中';
+      return 'service.state.running';
     case 'stopped':
-      return '已停止';
+      return 'service.state.stopped';
     case 'failed':
-      return '失败';
+      return 'service.state.failed';
     default:
-      return '未知';
+      return 'service.state.unknown';
   }
 }
 
@@ -73,19 +92,9 @@ export function serviceStateColor(state: ServiceState): string {
   }
 }
 
-export function riskLabel(risk: RiskLevel): string {
-  switch (risk) {
-    case 'read':
-      return '只读';
-    case 'low':
-      return '低风险';
-    case 'medium':
-      return '中风险';
-    case 'high':
-      return '高风险';
-    default:
-      return '已阻止';
-  }
+/** 风险等级对应的 i18n key（tool.risk.* 已在字典中）。 */
+export function riskLabelKey(risk: RiskLevel): string {
+  return `tool.risk.${risk}`;
 }
 
 export function riskColor(risk: RiskLevel): { text: string; bg: string; border: string } {

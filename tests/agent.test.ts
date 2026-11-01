@@ -151,6 +151,14 @@ function createHarness() {
   };
 
   const audit = { append: () => ({}) as never, list: () => [] };
+  const health = {
+    report: () => ({ serverId: server.id, generatedAt: Date.now(), score: { score: 100, grade: 'excellent', critical: 0, warning: 0, info: 0 }, issues: [] }),
+    setStatus: () => ({}) as never,
+    tickets: () => [],
+    recordTicket: () => undefined,
+    on: () => undefined,
+    emit: () => false,
+  };
   const monitor = {
     sampleOnce: async () => sample,
     refreshStatus: async () => undefined,
@@ -180,6 +188,7 @@ function createHarness() {
     settings: settings as never,
     providers: providers as never,
     monitor: monitor as never,
+    health: health as never,
   });
 
   const events: AgentStreamEvent[] = [];

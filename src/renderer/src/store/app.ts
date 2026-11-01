@@ -6,6 +6,8 @@ import type {
   AppSettings,
   ChatMessage,
   ConnectionInfo,
+  HealthReport,
+  IssueStatus,
   MetricSample,
   MonitorEvent,
   PortInfo,
@@ -16,12 +18,14 @@ import type {
   ServerProfile,
   ServerRuntime,
   ServiceInfo,
+  TicketRecord,
 } from '@shared/types';
 import type { ServerInput } from '@shared/api';
 import { api } from '../lib/api';
+import { translate } from '../lib/i18n';
 
-export type WorkspaceView = 'overview' | 'terminal' | 'assistant';
-export type DialogName = 'server' | 'settings' | 'provider' | 'audit' | 'profile';
+export type WorkspaceView = 'overview' | 'health' | 'file' | 'terminal' | 'assistant';
+export type DialogName = 'server' | 'settings' | 'provider' | 'audit' | 'profile' | 'tunnel';
 
 interface Toast {
   id: number;
@@ -40,6 +44,8 @@ interface AppState {
   runtimes: Record<string, ServerRuntime>;
   chats: Record<string, ChatMessage[]>;
   agents: Record<string, AgentRunStatus>;
+  reports: Record<string, HealthReport>;
+  tickets: Record<string, TicketRecord[]>;
   activeServerId: string | null;
   openTabs: string[];
   view: WorkspaceView;
@@ -65,6 +71,8 @@ interface AppState {
   exportProfile(id: string): Promise<void>;
   saveProfileNotes(id: string, notes: string): Promise<void>;
   summarize(id: string): Promise<void>;
+  refreshHealth(id: string): Promise<void>;
+  resolveIssue(id: string, issueId: string, status: IssueStatus): Promise<void>;
 
   handleConnection(info: ConnectionInfo): void;
   handleProfile(profile: ServerProfile): void;
@@ -76,9 +84,10 @@ interface AppState {
     processes?: ProcessInfo[];
   }): void;
   handleAgentEvent(event: AgentStreamEvent): void;
+  handleHealth(report: HealthReport): void;
   handleNotice(notice: { level: 'info' | 'warning' | 'error'; message: string }): void;
 
-  sendMessage(id: string, text: string): Promise<void>;
+  sendMessage(id: string, text: string, issueId?: string): Promise<void>;
   decide(id: string, callId: string, approved: boolean, always?: boolean): Promise<void>;
   cancel(id: string): Promise<void>;
   clearChat(id: string): Promise<void>;
@@ -152,6 +161,8 @@ export const useApp = create<AppState>((set, get) => ({
   runtimes: {},
   chats: {},
   agents: {},
+  reports: {},
+  tickets: {},
   activeServerId: null,
   openTabs: [],
   view: 'overview',
@@ -173,7 +184,7 @@ export const useApp = create<AppState>((set, get) => ({
       set({ info, settings, providers, servers, connections: connectionMap, ready: true });
     } catch (error) {
       set({ ready: true });
-      get().notify('error', `初始化失败：${errorMessage(error)}`);
+      get().notify('error', tr('toast.initFailed', { error: errorMessage(error) }));
     }
   },
 
@@ -200,20 +211,24 @@ export const useApp = create<AppState>((set, get) => ({
     const openTabs = state.openTabs.includes(id) ? state.openTabs : [...state.openTabs, id];
     set({ activeServerId: id, openTabs });
     try {
-      const [runtime, profile, chat, status] = await Promise.all([
+      const [runtime, profile, chat, status, report, tickets] = await Promise.all([
         api.monitor.snapshot(id),
         api.profile.get(id),
         api.ai.history(id),
         api.ai.status(id),
+        api.health.report(id),
+        api.health.tickets(id),
       ]);
       set((current) => ({
         runtimes: { ...current.runtimes, [id]: runtime },
         profiles: { ...current.profiles, [id]: profile },
         chats: { ...current.chats, [id]: chat },
         agents: { ...current.agents, [id]: status },
+        reports: { ...current.reports, [id]: report },
+        tickets: { ...current.tickets, [id]: tickets },
       }));
     } catch (error) {
-      get().notify('error', `加载服务器失败：${errorMessage(error)}`);
+      get().notify('error', tr('toast.loadServerFailed', { error: errorMessage(error) }));
     }
     const connection = get().connections[id];
     if (!connection || (connection.state !== 'connected' && connection.state !== 'connecting')) {
@@ -254,7 +269,7 @@ export const useApp = create<AppState>((set, get) => ({
     try {
       await api.connection.connect(id);
     } catch (error) {
-      get().notify('error', `连接失败：${errorMessage(error)}`);
+      get().notify('error', tr('toast.connectFailed', { error: errorMessage(error) }));
     }
   },
 
@@ -265,7 +280,7 @@ export const useApp = create<AppState>((set, get) => ({
 
   async resetHostKey(id) {
     await api.connection.resetHostKey(id);
-    get().notify('success', '已清除该服务器的主机指纹，下次连接会重新记录');
+    get().notify('success', tr('toast.hostKeyReset'));
   },
 
   async refreshRuntime(id) {
@@ -282,42 +297,63 @@ export const useApp = create<AppState>((set, get) => ({
       const profile = await api.profile.rescan(id);
       set((state) => ({ profiles: { ...state.profiles, [id]: profile } }));
       await get().refreshRuntime(id);
-      get().notify('success', '服务器侦察完成，档案已更新');
+      get().notify('success', tr('toast.reconDone'));
     } catch (error) {
-      get().notify('error', `侦察失败：${errorMessage(error)}`);
+      get().notify('error', tr('toast.reconFailed', { error: errorMessage(error) }));
     }
   },
 
   async syncProfile(id) {
     const result = await api.profile.sync(id);
-    if (result.ok) get().notify('success', `档案已同步到服务器 ${result.path}`);
-    else get().notify('error', `同步失败：${result.error}`);
+    if (result.ok) get().notify('success', tr('toast.profileSynced', { path: result.path ?? '' }));
+    else get().notify('error', tr('toast.syncFailed', { error: result.error ?? '' }));
   },
 
   async saveProfileNotes(id, notes) {
     try {
       const profile = await api.profile.save(id, { notes });
       set((state) => ({ profiles: { ...state.profiles, [id]: profile } }));
-      get().notify('success', '运维笔记已保存');
+      get().notify('success', tr('toast.notesSaved'));
     } catch (error) {
-      get().notify('error', `保存笔记失败：${errorMessage(error)}`);
+      get().notify('error', tr('toast.notesFailed', { error: errorMessage(error) }));
     }
   },
 
   async exportProfile(id) {
     const result = await api.profile.export(id);
-    if (result.ok) get().notify('success', `档案已导出到 ${result.path}`);
-    else if (!result.canceled) get().notify('error', `导出失败：${result.error}`);
+    if (result.ok) get().notify('success', tr('toast.exported', { path: result.path ?? '' }));
+    else if (!result.canceled) get().notify('error', tr('toast.exportFailed', { error: result.error ?? '' }));
   },
 
   async summarize(id) {
-    get().notify('info', '正在让 AI 总结当前服务器状态…');
+    get().notify('info', tr('toast.summarizing'));
     const text = await api.profile.summarize(id);
     if (text) {
       await get().refreshRuntime(id);
-      get().notify('success', 'AI 状态摘要已更新');
+      get().notify('success', tr('toast.summaryUpdated'));
     } else {
-      get().notify('warning', '摘要生成失败，请检查模型配置');
+      get().notify('warning', tr('toast.summaryFailed'));
+    }
+  },
+
+  async refreshHealth(id) {
+    try {
+      const [report, tickets] = await Promise.all([api.health.report(id), api.health.tickets(id)]);
+      set((state) => ({
+        reports: { ...state.reports, [id]: report },
+        tickets: { ...state.tickets, [id]: tickets },
+      }));
+    } catch {
+      // 体检报告是辅助信息，读取失败不打断主流程
+    }
+  },
+
+  async resolveIssue(id, issueId, status) {
+    try {
+      const report = await api.health.resolve(id, issueId, status);
+      set((state) => ({ reports: { ...state.reports, [id]: report } }));
+    } catch (error) {
+      get().notify('error', tr('toast.issueFailed', { error: errorMessage(error) }));
     }
   },
 
@@ -451,9 +487,18 @@ export const useApp = create<AppState>((set, get) => ({
     get().notify(notice.level === 'error' ? 'error' : notice.level, notice.message);
   },
 
-  async sendMessage(id, text) {
+  handleHealth(report) {
+    set((state) => ({ reports: { ...state.reports, [report.serverId]: report } }));
+    // 工单会在修复执行后变化，随报告一起刷新。
+    void api.health
+      .tickets(report.serverId)
+      .then((tickets) => set((state) => ({ tickets: { ...state.tickets, [report.serverId]: tickets } })))
+      .catch(() => undefined);
+  },
+
+  async sendMessage(id, text, issueId) {
     try {
-      await api.ai.send(id, text);
+      await api.ai.send(id, text, issueId);
     } catch (error) {
       get().notify('error', errorMessage(error));
     }
@@ -482,7 +527,7 @@ export const useApp = create<AppState>((set, get) => ({
         await api.servers.update(editingId, input);
         await get().refreshServers();
         set({ dialog: null, editingServer: null });
-        get().notify('success', '服务器配置已更新');
+        get().notify('success', tr('toast.serverUpdated'));
         return true;
       }
       const server = await api.servers.create(input);
@@ -491,7 +536,7 @@ export const useApp = create<AppState>((set, get) => ({
       await get().openServer(server.id);
       return true;
     } catch (error) {
-      get().notify('error', `保存失败：${errorMessage(error)}`);
+      get().notify('error', tr('toast.saveFailed', { error: errorMessage(error) }));
       return false;
     }
   },
@@ -504,9 +549,9 @@ export const useApp = create<AppState>((set, get) => ({
       const activeServerId = state.activeServerId === id ? (openTabs.at(-1) ?? null) : state.activeServerId;
       set({ openTabs, activeServerId });
       await get().refreshServers();
-      get().notify('success', '服务器已删除');
+      get().notify('success', tr('toast.serverDeleted'));
     } catch (error) {
-      get().notify('error', `删除失败：${errorMessage(error)}`);
+      get().notify('error', tr('toast.deleteFailed', { error: errorMessage(error) }));
     }
   },
 
@@ -515,9 +560,9 @@ export const useApp = create<AppState>((set, get) => ({
       const result = await api.demo.start();
       await get().refreshServers();
       await get().openServer(result.serverId);
-      get().notify('success', '演示服务器已启动');
+      get().notify('success', tr('toast.demoStarted'));
     } catch (error) {
-      get().notify('error', `演示服务器启动失败：${errorMessage(error)}`);
+      get().notify('error', tr('toast.demoFailed', { error: errorMessage(error) }));
     }
   },
 
@@ -526,7 +571,7 @@ export const useApp = create<AppState>((set, get) => ({
       const settings = await api.settings.save(patch);
       set({ settings });
     } catch (error) {
-      get().notify('error', `保存设置失败：${errorMessage(error)}`);
+      get().notify('error', tr('toast.settingsFailed', { error: errorMessage(error) }));
     }
   },
 
@@ -535,10 +580,10 @@ export const useApp = create<AppState>((set, get) => ({
       await api.ai.saveProvider(input);
       const [providers, settings] = await Promise.all([api.ai.providers(), api.settings.get()]);
       set({ providers, settings });
-      get().notify('success', '模型服务商已保存');
+      get().notify('success', tr('toast.providerSaved'));
       return true;
     } catch (error) {
-      get().notify('error', `保存失败：${errorMessage(error)}`);
+      get().notify('error', tr('toast.saveFailed', { error: errorMessage(error) }));
       return false;
     }
   },
@@ -549,7 +594,7 @@ export const useApp = create<AppState>((set, get) => ({
       const [providers, settings] = await Promise.all([api.ai.providers(), api.settings.get()]);
       set({ providers, settings });
     } catch (error) {
-      get().notify('error', `删除失败：${errorMessage(error)}`);
+      get().notify('error', tr('toast.deleteFailed', { error: errorMessage(error) }));
     }
   },
 
@@ -557,6 +602,11 @@ export const useApp = create<AppState>((set, get) => ({
     await get().saveSettings({ activeProviderId: id });
   },
 }));
+
+/** store 里没有 React 上下文，用当前语言直接翻译 toast 文案。 */
+function tr(key: string, vars?: Record<string, string | number>): string {
+  return translate(useApp.getState().settings?.language ?? 'zh', key, vars);
+}
 
 export function selectRuntime(state: AppState, serverId: string | null): ServerRuntime | null {
   if (!serverId) return null;

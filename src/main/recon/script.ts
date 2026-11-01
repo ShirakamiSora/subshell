@@ -1,11 +1,12 @@
-import { shellQuote } from '../ssh/connection';
-
 /**
  * 只读侦察脚本。一次 SSH 往返收集系统、服务、端口、运行时、安全配置等信息。
  * 所有命令都允许失败，输出按 `##SECTION:name` 分段，便于稳定解析。
  */
 export function reconScript(): string {
   const script = `set +e
+# 强制 C locale：systemd/df/ps/date 等工具的输出会按 LANG 本地化（中文系统会变成
+# 「已加载 活动 运行中」），而解析器依赖英文状态词，不固定 locale 会导致整份档案失真。
+export LC_ALL=C LANG=C LANGUAGE=C
 section() { printf '\\n##SECTION:%s\\n' "$1"; }
 v() { printf '%s=%s\\n' "$1" "$2"; }
 have() { command -v "$1" >/dev/null 2>&1; }

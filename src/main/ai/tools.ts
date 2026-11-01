@@ -42,6 +42,11 @@ export interface PreparedToolCall {
   impact: string;
   rollback?: string;
   needsApproval: boolean;
+  /**
+   * 工具类别。智能审批只自动放行 service 类的低风险操作；
+   * write（写档案/笔记）与 command（任意命令）始终需要用户确认。
+   */
+  kind: 'read' | 'service' | 'write' | 'command';
   /** 本地直接拒绝的原因（如危险命令） */
   blocked?: string;
 }
@@ -260,6 +265,13 @@ function resolveUnit(name: string): string {
   return name.endsWith('.service') ? name : `${name}.service`;
 }
 
+/**
+ * 内部诊断命令统一使用 C locale。远端若配置了 zh_CN/ja_JP 等 locale，
+ * systemd/journalctl/ps 的表头与状态词会被翻译，解析与展示都会失真；
+ * 用户自己通过 run_command 执行的命令不加这个前缀，保持其所见即所得。
+ */
+const C = 'LC_ALL=C ';
+
 function serviceActionCommand(
   name: string,
   action: string,
@@ -275,18 +287,18 @@ function serviceActionCommand(
 }
 
 /** 在不执行命令的前提下，把一次工具调用转换为待展示/待审批的计划。 */
-export function prepareToolCall(name: string, args: Record<string, unknown>, ctx: ToolContext): PreparedToolCall {
+export function prepareToolCall(name: string, args: Record<string, unknown>, _ctx: ToolContext): PreparedToolCall {
   const base = { name, args };
 
   switch (name) {
     case 'get_overview':
-      return { ...base, title: '读取系统概览', risk: 'read', impact: '仅读取系统信息', needsApproval: false };
+      return { ...base, title: '读取系统概览', risk: 'read', impact: '仅读取系统信息', needsApproval: false, kind: 'read' };
     case 'list_services':
-      return { ...base, title: '列出服务状态', risk: 'read', impact: '仅读取服务列表', needsApproval: false };
+      return { ...base, title: '列出服务状态', risk: 'read', impact: '仅读取服务列表', needsApproval: false, kind: 'read' };
     case 'list_processes':
-      return { ...base, title: '查看进程占用', risk: 'read', impact: '仅读取进程信息', needsApproval: false };
+      return { ...base, title: '查看进程占用', risk: 'read', impact: '仅读取进程信息', needsApproval: false, kind: 'read' };
     case 'list_ports':
-      return { ...base, title: '查看监听端口', risk: 'read', impact: '仅读取端口信息', needsApproval: false };
+      return { ...base, title: '查看监听端口', risk: 'read', impact: '仅读取端口信息', needsApproval: false, kind: 'read' };
     case 'inspect_service': {
       const unit = str(args, 'name');
       return {
@@ -295,6 +307,7 @@ export function prepareToolCall(name: string, args: Record<string, unknown>, ctx
         risk: 'read',
         impact: '仅读取服务状态与日志',
         needsApproval: false,
+        kind: 'read',
       };
     }
     case 'read_logs': {
@@ -306,6 +319,7 @@ export function prepareToolCall(name: string, args: Record<string, unknown>, ctx
         risk: 'read',
         impact: '仅读取日志内容',
         needsApproval: false,
+        kind: 'read',
       };
     }
     case 'read_file':
@@ -315,6 +329,7 @@ export function prepareToolCall(name: string, args: Record<string, unknown>, ctx
         risk: 'read',
         impact: '仅读取文件内容',
         needsApproval: false,
+        kind: 'read',
       };
     case 'list_files':
       return {
@@ -323,6 +338,7 @@ export function prepareToolCall(name: string, args: Record<string, unknown>, ctx
         risk: 'read',
         impact: '仅读取目录列表',
         needsApproval: false,
+        kind: 'read',
       };
     case 'service_action': {
       const unit = str(args, 'name');
@@ -351,6 +367,7 @@ export function prepareToolCall(name: string, args: Record<string, unknown>, ctx
               ? `systemctl enable ${resolveUnit(unit)}`
               : undefined,
         needsApproval: true,
+        kind: 'service',
       };
     }
     case 'run_command': {
@@ -363,6 +380,7 @@ export function prepareToolCall(name: string, args: Record<string, unknown>, ctx
         risk: assessment.level,
         impact: assessment.reasons.join('；'),
         needsApproval: assessment.level !== 'read',
+        kind: 'command',
         blocked: assessment.level === 'blocked' ? assessment.reasons.join('；') : undefined,
       };
     }
@@ -371,11 +389,14 @@ export function prepareToolCall(name: string, args: Record<string, unknown>, ctx
         ...base,
         title: '更新服务器档案',
         risk: 'low',
-        impact: '更新本地保存的服务器知识，不会改动服务器',
-        needsApproval: false,
+        // 档案内容会被注入后续对话的系统提示，因此必须让用户看到模型要写入什么，
+        // 否则就存在「模型改写自己的上下文」的注入通道。
+        impact: '写入本地保存的服务器知识（会进入后续对话的上下文），不会改动服务器',
+        needsApproval: true,
+        kind: 'write',
       };
     case 'finish':
-      return { ...base, title: '结束任务', risk: 'read', impact: '提交总结', needsApproval: false };
+      return { ...base, title: '结束任务', risk: 'read', impact: '提交总结', needsApproval: false, kind: 'read' };
     default:
       return {
         ...base,
@@ -383,6 +404,7 @@ export function prepareToolCall(name: string, args: Record<string, unknown>, ctx
         risk: 'medium',
         impact: '未注册的工具',
         needsApproval: true,
+        kind: 'command',
         blocked: `不支持的工具：${name}`,
       };
   }
@@ -512,10 +534,10 @@ async function inspectService(args: Record<string, unknown>, ctx: ToolContext): 
   if (kind === 'docker') {
     const inspect = await ctx.ssh.exec(
       ctx.serverId,
-      `docker inspect ${name} --format '{{.State.Status}} | restarts={{.RestartCount}} | image={{.Config.Image}} | started={{.State.StartedAt}}'`,
+      `${C}docker inspect ${name} --format '{{.State.Status}} | restarts={{.RestartCount}} | image={{.Config.Image}} | started={{.State.StartedAt}}'`,
       { timeoutMs: 15_000 },
     );
-    const logs = await ctx.ssh.exec(ctx.serverId, `docker logs --tail ${logLines} ${name} 2>&1`, {
+    const logs = await ctx.ssh.exec(ctx.serverId, `${C}docker logs --tail ${logLines} ${name} 2>&1`, {
       timeoutMs: 15_000,
     });
     return {
@@ -528,7 +550,7 @@ async function inspectService(args: Record<string, unknown>, ctx: ToolContext): 
   const unit = resolveUnit(name);
   const status = await ctx.ssh.exec(
     ctx.serverId,
-    `systemctl status ${unit} --no-pager -l --lines=${logLines}`,
+    `${C}systemctl status ${unit} --no-pager -l --lines=${logLines}`,
     { timeoutMs: 20_000 },
   );
   return {
@@ -563,10 +585,12 @@ async function serviceAction(prepared: PreparedToolCall, ctx: ToolContext): Prom
 
   let verification = '';
   if (kind === 'systemd' && ['start', 'restart', 'reload', 'stop'].includes(action)) {
-    const check = await ctx.ssh.exec(ctx.serverId, `systemctl is-active ${resolveUnit(name)}`, { timeoutMs: 10_000 });
+    const check = await ctx.ssh.exec(ctx.serverId, `${C}systemctl is-active ${resolveUnit(name)}`, {
+      timeoutMs: 10_000,
+    });
     verification = `\n验证: systemctl is-active → ${check.stdout.trim() || '未知'}`;
   } else if (kind === 'docker') {
-    const check = await ctx.ssh.exec(ctx.serverId, `docker inspect ${name} --format '{{.State.Status}}'`, {
+    const check = await ctx.ssh.exec(ctx.serverId, `${C}docker inspect ${name} --format '{{.State.Status}}'`, {
       timeoutMs: 10_000,
     });
     verification = `\n验证: 容器状态 → ${check.stdout.trim() || '未知'}`;
@@ -585,12 +609,12 @@ async function listProcesses(args: Record<string, unknown>, ctx: ToolContext): P
   const sort = str(args, 'sort') === 'mem' ? 'mem' : 'cpu';
   const limit = numArg(args, 'limit', 15, 50);
   const data = ctx.runtime.get(ctx.serverId);
-  let processes = [...data.processes];
+  const processes = [...data.processes];
 
   if (!processes.length) {
     const result = await ctx.ssh.exec(
       ctx.serverId,
-      `ps -eo pid=,user=,%cpu=,%mem=,rss=,args= --sort=-%${sort === 'mem' ? 'mem' : 'cpu'} 2>/dev/null | head -${limit + 5}`,
+      `${C}ps -eo pid=,user=,%cpu=,%mem=,rss=,args= --sort=-%${sort === 'mem' ? 'mem' : 'cpu'} 2>/dev/null | head -${limit + 5}`,
       { timeoutMs: 15_000 },
     );
     return { ok: true, command: 'ps', output: clip(result.stdout, 5000) };
@@ -614,7 +638,7 @@ async function listPorts(_args: Record<string, unknown>, ctx: ToolContext): Prom
     );
     return { ok: true, output: lines.join('\n') };
   }
-  const result = await ctx.ssh.exec(ctx.serverId, 'ss -tulpnH 2>/dev/null || netstat -tulpn 2>/dev/null', {
+  const result = await ctx.ssh.exec(ctx.serverId, `${C}ss -tulpnH 2>/dev/null || ${C}netstat -tulpn 2>/dev/null`, {
     timeoutMs: 15_000,
   });
   return { ok: true, command: 'ss -tulpn', output: clip(result.stdout, 6000) };
@@ -633,7 +657,7 @@ async function readLogs(args: Record<string, unknown>, ctx: ToolContext): Promis
     if (!validation.ok) return { ok: false, output: validation.reason ?? '路径不允许' };
     const result = await ctx.ssh.exec(
       ctx.serverId,
-      `tail -n ${lines} ${validation.normalized}${grep ? ` | grep -i ${shellArg(grep)}` : ''}`,
+      `${C}tail -n ${lines} ${validation.normalized}${grep ? ` | grep -i ${shellArg(grep)}` : ''}`,
       { timeoutMs: 20_000 },
     );
     return {
@@ -646,7 +670,7 @@ async function readLogs(args: Record<string, unknown>, ctx: ToolContext): Promis
   if (!unit) return { ok: false, output: '需要提供 unit 或 path' };
   if (!isValidUnitName(unit)) return { ok: false, output: '服务名包含非法字符' };
 
-  const parts = [`journalctl -u ${resolveUnit(unit)} -n ${lines} --no-pager -o short-iso`];
+  const parts = [`${C}journalctl -u ${resolveUnit(unit)} -n ${lines} --no-pager -o short-iso`];
   if (since) parts.push(`--since ${shellArg(since)}`);
   if (priority) parts.push(`-p ${priority}`);
   let command = parts.join(' ');
@@ -669,7 +693,7 @@ async function readFile(args: Record<string, unknown>, ctx: ToolContext): Promis
   const end = offset + limit - 1;
   const result = await ctx.ssh.exec(
     ctx.serverId,
-    `sed -n '${offset},${end}p' ${validation.normalized}`,
+    `${C}sed -n '${offset},${end}p' ${validation.normalized}`,
     { timeoutMs: 20_000 },
   );
   return {
@@ -683,7 +707,7 @@ async function listFiles(args: Record<string, unknown>, ctx: ToolContext): Promi
   const path = str(args, 'path');
   const validation = validateReadPath(path);
   if (!validation.ok) return { ok: false, output: validation.reason ?? '路径不允许' };
-  const result = await ctx.ssh.exec(ctx.serverId, `ls -lah ${validation.normalized}`, { timeoutMs: 15_000 });
+  const result = await ctx.ssh.exec(ctx.serverId, `${C}ls -lah ${validation.normalized}`, { timeoutMs: 15_000 });
   return { ok: result.exitCode === 0, command: `ls -lah ${validation.normalized}`, output: formatExec('ls', result) };
 }
 

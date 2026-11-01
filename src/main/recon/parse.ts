@@ -181,7 +181,7 @@ export function parsePorts(body: string): PortInfo[] {
     const protocol = tokens[0]?.toLowerCase();
     if (protocol !== 'tcp' && protocol !== 'udp') continue;
 
-    let local = '';
+    let local: string;
     if (tokens[1] === 'LISTEN' || tokens[1] === 'UNCONN') {
       local = tokens[4] ?? '';
     } else if (/^\d+$/.test(tokens[1] ?? '') && tokens[3]) {

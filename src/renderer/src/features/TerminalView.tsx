@@ -9,6 +9,7 @@ import { api } from '../lib/api';
 import { cn } from '../lib/cn';
 import { suggestCommands, type CommandSuggestion } from '../lib/commands';
 import { CommandDialog } from '../components/CommandDialog';
+import { useI18n } from '../lib/i18n';
 
 type SessionState = 'opening' | 'ready' | 'closed' | 'error';
 
@@ -37,6 +38,7 @@ const theme = {
 };
 
 export function TerminalView({ serverId, active = true }: { serverId: string; active?: boolean }) {
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -117,7 +119,7 @@ export function TerminalView({ serverId, active = true }: { serverId: string; ac
       if (id === sessionRef.current) {
         sessionRef.current = null;
         setStatus('closed');
-        term.writeln('\r\n\x1b[38;2;248;113;113m[SSH 会话已断开]\x1b[0m');
+        term.writeln(`\r\n\x1b[38;2;248;113;113m${t('terminal.disconnected')}\x1b[0m`);
       }
     });
     const dataDisposable = term.onData((data) => {
@@ -215,7 +217,7 @@ export function TerminalView({ serverId, active = true }: { serverId: string; ac
       <div className="flex h-9 flex-none items-center gap-1 border-b border-[var(--border)] bg-[var(--panel)] px-3">
         <span className="flex items-center gap-1.5 text-[12px] text-[var(--muted-2)]">
           <TerminalSquare size={12} />
-          交互式终端
+          {t('terminal.title')}
         </span>
         <span
           className={cn(
@@ -226,41 +228,51 @@ export function TerminalView({ serverId, active = true }: { serverId: string; ac
           )}
         >
           {status === 'opening' && <Loader2 size={9} className="spin" />}
-          {status === 'ready' ? '会话就绪' : status === 'opening' ? '连接中' : status === 'closed' ? '已断开' : '打开失败'}
+          {status === 'ready'
+            ? t('terminal.status.ready')
+            : status === 'opening'
+              ? t('terminal.status.opening')
+              : status === 'closed'
+                ? t('terminal.status.closed')
+                : t('terminal.status.error')}
         </span>
         <div className="ml-auto flex items-center gap-0.5">
           <button
             className="btn btn-ghost h-7 px-2 text-[12px]"
             onClick={() => setShowAnalyze(true)}
-            title="分析命令（只分析，不执行）"
+            title={t('terminal.action.analyzeTitle')}
           >
             <Sparkles size={12} />
-            命令分析
+            {t('terminal.action.analyze')}
           </button>
-          <button className="btn btn-ghost h-7 px-2 text-[12px]" onClick={copySelection} title="复制选中内容">
+          <button
+            className="btn btn-ghost h-7 px-2 text-[12px]"
+            onClick={copySelection}
+            title={t('terminal.action.copyTitle')}
+          >
             <ClipboardCopy size={12} />
-            复制
+            {t('terminal.action.copy')}
           </button>
-          <button className="btn btn-ghost h-7 px-2 text-[12px]" onClick={() => void paste()} title="粘贴">
-            粘贴
+          <button className="btn btn-ghost h-7 px-2 text-[12px]" onClick={() => void paste()} title={t('terminal.action.paste')}>
+            {t('terminal.action.paste')}
           </button>
           <button
             className="btn btn-ghost h-7 px-2 text-[12px]"
             onClick={() => {
               termRef.current?.clear();
             }}
-            title="清屏"
+            title={t('terminal.action.clear')}
           >
             <Eraser size={12} />
-            清屏
+            {t('terminal.action.clear')}
           </button>
           <button
             className="btn btn-ghost h-7 px-2 text-[12px]"
             onClick={() => startRef.current?.()}
-            title="重新打开会话"
+            title={t('terminal.action.reconnectTitle')}
           >
             <RotateCw size={12} />
-            重连
+            {t('terminal.action.reconnect')}
           </button>
         </div>
       </div>
@@ -271,7 +283,7 @@ export function TerminalView({ serverId, active = true }: { serverId: string; ac
         {suggestions.length > 0 && (
           <div className="absolute bottom-3 left-3 z-30 w-[440px] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--panel)] shadow-2xl">
             <div className="border-b border-[var(--border)] px-2.5 py-1.5 text-[11px] text-[var(--muted-2)]">
-              命令补全 · 点击插入，Esc 关闭
+              {t('terminal.suggest.title')}
             </div>
             {suggestions.map((suggestion) => (
               <button
@@ -288,19 +300,19 @@ export function TerminalView({ serverId, active = true }: { serverId: string; ac
         {status === 'opening' && connected && (
           <div className="absolute inset-0 flex items-center justify-center gap-2 bg-[var(--bg)]/80 text-[12.5px] text-[var(--muted)]">
             <Loader2 size={14} className="spin text-[var(--accent)]" />
-            正在建立 SSH 会话…
+            {t('terminal.connecting')}
           </div>
         )}
         {!connected && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[var(--bg)]/92 ">
             <WifiOff size={24} className="text-[var(--muted-2)]" />
             <div className="text-[13px] text-[var(--muted)]">
-              {connection?.state === 'connecting' ? '正在连接服务器…' : 'SSH 连接未建立'}
+              {connection?.state === 'connecting' ? t('terminal.connectingHost') : t('terminal.notConnected')}
             </div>
             {connection?.error && <div className="max-w-md text-center text-[12px] text-[var(--danger)]">{connection.error}</div>}
             {connection?.state !== 'connecting' && (
               <button className="btn btn-primary" onClick={() => void connect(serverId)}>
-                连接服务器
+                {t('overview.connect')}
               </button>
             )}
           </div>
@@ -309,7 +321,7 @@ export function TerminalView({ serverId, active = true }: { serverId: string; ac
 
       {status === 'error' && (
         <div className="flex-none border-t border-rose-400/20 bg-rose-950/40 px-3 py-1.5 text-[12px] text-[var(--danger)]">
-          {error || '无法打开 SSH 会话'}
+          {error || t('terminal.openFailed')}
         </div>
       )}
 

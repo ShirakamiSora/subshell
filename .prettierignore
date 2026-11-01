@@ -1,0 +1,7 @@
+out/
+release/
+node_modules/
+build/
+package-lock.json
+*.md
+docs/screenshots/

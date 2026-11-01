@@ -3,8 +3,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { Client, type ClientChannel, type ConnectConfig } from 'ssh2';
-import type { ExecOptions, ExecResult, ServerConfig } from '../../shared/types';
+import { Client, type ClientChannel, type ConnectConfig, type SFTPWrapper } from 'ssh2';
+import type { ExecOptions, ExecResult, RemoteEntry, ServerConfig } from '../../shared/types';
 import type { ServerSecretInput } from '../../shared/types';
 import { createLogger } from '../util/logger';
 
@@ -288,12 +288,142 @@ export class SshConnection extends EventEmitter {
     });
   }
 
-  async sftp(): Promise<import('ssh2').SFTPWrapper> {
-    return new Promise((resolve, reject) => {
+  /** 打开一条到远端地址的直连通道，用于本地端口转发。 */
+  async forwardOut(srcHost: string, srcPort: number, dstHost: string, dstPort: number): Promise<ClientChannel> {
+    return new Promise<ClientChannel>((resolve, reject) => {
+      this.client.forwardOut(srcHost, srcPort, dstHost, dstPort, (error, channel) => {
+        if (error) reject(error);
+        else resolve(channel);
+      });
+    });
+  }
+
+  async sftp(): Promise<SFTPWrapper> {
+    if (this.sftpCache) return this.sftpCache;
+    const wrapper = await new Promise<SFTPWrapper>((resolve, reject) => {
       this.client.sftp((error, sftp) => {
         if (error) reject(error);
         else resolve(sftp);
       });
+    });
+    this.sftpCache = wrapper;
+    wrapper.on('close', () => {
+      if (this.sftpCache === wrapper) this.sftpCache = null;
+    });
+    return wrapper;
+  }
+
+  private sftpCache: SFTPWrapper | null = null;
+
+  /** 远端 home 目录，作为文件管理器的默认起点。 */
+  async homeDir(): Promise<string> {
+    const sftp = await this.sftp();
+    return new Promise<string>((resolve) => {
+      sftp.realpath('.', (error, resolved) => resolve(error ? '/' : resolved || '/'));
+    });
+  }
+
+  async listDir(remotePath: string): Promise<RemoteEntry[]> {
+    const sftp = await this.sftp();
+    const entries = await new Promise<import('ssh2').FileEntry[]>((resolve, reject) => {
+      sftp.readdir(remotePath, (error, list) => {
+        if (error) reject(error);
+        else resolve(list);
+      });
+    });
+
+    return entries
+      .filter((entry) => entry.filename !== '.' && entry.filename !== '..')
+      .map((entry) => {
+        const mode = entry.attrs.mode ?? 0;
+        const kind = mode & 0o170000;
+        const type: RemoteEntry['type'] =
+          kind === 0o040000 ? 'directory' : kind === 0o120000 ? 'symlink' : kind === 0o100000 ? 'file' : 'other';
+        const base = remotePath.endsWith('/') ? remotePath.slice(0, -1) : remotePath;
+        return {
+          name: entry.filename,
+          path: `${base}/${entry.filename}`,
+          type,
+          size: entry.attrs.size ?? 0,
+          mode,
+          mtime: (entry.attrs.mtime ?? 0) * 1000,
+          linkTarget: entry.longname?.includes(' -> ') ? entry.longname.split(' -> ')[1] : undefined,
+        } satisfies RemoteEntry;
+      })
+      .sort((a, b) => {
+        if (a.type === 'directory' && b.type !== 'directory') return -1;
+        if (b.type === 'directory' && a.type !== 'directory') return 1;
+        return a.name.localeCompare(b.name);
+      });
+  }
+
+  /** 读取小文件用于预览；超过上限直接拒绝，避免把大文件读进主进程内存。 */
+  async readTextFile(remotePath: string, maxBytes = 512 * 1024): Promise<string> {
+    const sftp = await this.sftp();
+    return new Promise<string>((resolve, reject) => {
+      sftp.open(remotePath, 'r', (openError, handle) => {
+        if (openError) {
+          reject(openError);
+          return;
+        }
+        const close = () => sftp.close(handle, () => undefined);
+        sftp.fstat(handle, (statError, stats) => {
+          if (statError) {
+            close();
+            reject(statError);
+            return;
+          }
+          const size = stats.size ?? 0;
+          if (size > maxBytes) {
+            close();
+            reject(new Error(`文件大小 ${(size / 1024 / 1024).toFixed(1)} MB，超过预览上限，请下载后查看`));
+            return;
+          }
+          const buffer = Buffer.alloc(size);
+          sftp.read(handle, buffer, 0, size, 0, (readError) => {
+            close();
+            if (readError) reject(readError);
+            else resolve(buffer.toString('utf8'));
+          });
+        });
+      });
+    });
+  }
+
+  async downloadFile(remotePath: string, localPath: string): Promise<void> {
+    const sftp = await this.sftp();
+    await new Promise<void>((resolve, reject) => {
+      sftp.fastGet(remotePath, localPath, (error) => (error ? reject(error) : resolve()));
+    });
+  }
+
+  async uploadFile(localPath: string, remotePath: string): Promise<void> {
+    const sftp = await this.sftp();
+    await new Promise<void>((resolve, reject) => {
+      sftp.fastPut(localPath, remotePath, (error) => (error ? reject(error) : resolve()));
+    });
+  }
+
+  async makeDir(remotePath: string): Promise<void> {
+    const sftp = await this.sftp();
+    await new Promise<void>((resolve, reject) => {
+      sftp.mkdir(remotePath, (error) => (error ? reject(error) : resolve()));
+    });
+  }
+
+  async renamePath(from: string, to: string): Promise<void> {
+    const sftp = await this.sftp();
+    await new Promise<void>((resolve, reject) => {
+      sftp.rename(from, to, (error) => (error ? reject(error) : resolve()));
+    });
+  }
+
+  async removePath(remotePath: string, isDir: boolean): Promise<void> {
+    const sftp = await this.sftp();
+    await new Promise<void>((resolve, reject) => {
+      const done = (error?: Error | null) => (error ? reject(error) : resolve());
+      if (isDir) sftp.rmdir(remotePath, done);
+      else sftp.unlink(remotePath, done);
     });
   }
 

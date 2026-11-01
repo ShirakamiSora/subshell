@@ -1,9 +1,10 @@
-import { app, BrowserWindow, Menu, dialog, shell } from 'electron';
+import { app, BrowserWindow, Menu, Notification, dialog, session, shell } from 'electron';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { AppContext } from './context';
 import { registerIpc } from './ipc';
+import { checkForUpdates, openDownloadPage } from './update/service';
 import { createLogger } from './util/logger';
 
 /**
@@ -94,9 +95,11 @@ app
     try {
       context = new AppContext(pickDataRoot());
       registerIpc(context);
+      applyContentSecurityPolicy();
       setupMenu();
       mainWindow = createWindow();
       forwardEvents(context);
+      scheduleUpdateCheck(context);
       startupLog(`window created, dataDir=${context.dataDir}`);
       log.info(`subshell 已启动，数据目录 ${context.dataDir}`);
     } catch (error) {
@@ -186,7 +189,9 @@ function createWindow(): BrowserWindow {
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
+      // 渲染进程不需要 Node 能力：开启 sandbox 后即使渲染层被 XSS 利用，
+      // 也无法直接触达文件系统与 child_process，只能走白名单 IPC。
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
       spellcheck: false,
@@ -233,6 +238,59 @@ function createWindow(): BrowserWindow {
   });
 
   return window;
+}
+
+/**
+ * 生产构建注入 CSP。开发模式跳过：Vite HMR 需要内联脚本与 ws 连接，
+ * 强行收紧会让 `npm run dev` 直接白屏。
+ */
+function applyContentSecurityPolicy(): void {
+  if (process.env.ELECTRON_RENDERER_URL) return;
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        ],
+      },
+    });
+  });
+}
+
+/**
+ * 启动后延迟检查新版本。只查询 GitHub Releases，不上报任何数据；
+ * 用户可在设置里关闭。发现新版本时同时给出系统通知与应用内提示。
+ */
+function scheduleUpdateCheck(ctx: AppContext): void {
+  if (!ctx.settings.get().autoCheckUpdate) return;
+  const timer = setTimeout(() => {
+    void (async () => {
+      const info = await checkForUpdates();
+      if (!info.hasUpdate || !info.url) return;
+      const zh = ctx.settings.get().language === 'zh';
+      try {
+        if (Notification.isSupported()) {
+          const notification = new Notification({
+            title: zh ? `Subshell ${info.latest} 已发布` : `Subshell ${info.latest} is available`,
+            body: zh ? '点击查看更新内容' : 'Click to view the release',
+          });
+          notification.on('click', () => openDownloadPage(info.url));
+          notification.show();
+        }
+      } catch {
+        // 系统通知不可用时，仍然给应用内提示
+      }
+      const send = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.send.bind(mainWindow.webContents) : null;
+      send?.('app:notice', {
+        level: 'info',
+        message: zh
+          ? `发现新版本 ${info.latest}，可在「设置 → 关于」中查看`
+          : `Version ${info.latest} is available — see Settings → About`,
+      });
+    })();
+  }, 20_000);
+  timer.unref?.();
 }
 
 function setupMenu(): void {
@@ -282,4 +340,5 @@ function forwardEvents(ctx: AppContext): void {
   );
   ctx.recon.on('profile', (profile) => send('profile:update', profile));
   ctx.agent.on('event', (event) => send('agent:event', event));
+  ctx.health.on('update', (serverId: string, report) => send('health:update', report));
 }

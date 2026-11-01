@@ -32,6 +32,7 @@ import { createLogger } from '../util/logger';
 const log = createLogger('monitor');
 
 export const METRIC_SCRIPT = `set +e
+export LC_ALL=C LANG=C LANGUAGE=C
 printf 'CPU=%s\\n' "$(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8,$9}' /proc/stat 2>/dev/null)"
 printf 'MEM_TOTAL=%s\\n' "$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)"
 printf 'MEM_AVAILABLE=%s\\n' "$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)"
@@ -44,6 +45,7 @@ printf 'NET=%s\\n' "$(awk -F'[: ]+' 'NR>2 && $1!="lo"{rx+=$3; tx+=$11} END{print
 printf 'PROCS=%s\\n' "$(ps -e --no-headers 2>/dev/null | wc -l | tr -d ' ')"`;
 
 export const STATUS_SCRIPT = `set +e
+export LC_ALL=C LANG=C LANGUAGE=C
 printf '\\n##SECTION:systemd\\n'
 if command -v systemctl >/dev/null 2>&1; then systemctl list-units --type=service --all --no-legend --no-pager 2>/dev/null | head -300; fi
 printf '\\n##SECTION:failed\\n'

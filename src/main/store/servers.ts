@@ -24,7 +24,24 @@ export class ServerStore {
   private readonly store: JsonStore<ServerConfig[]>;
 
   constructor(dataDir: string) {
-    this.store = new JsonStore<ServerConfig[]>(`${dataDir}/servers.json`, () => []);
+    this.store = new JsonStore<ServerConfig[]>(`${dataDir}/servers.json`, () => [], {
+      version: 2,
+      migrate: (data) => {
+        const list = Array.isArray(data) ? data : [];
+        return list.map((item) => {
+          const server = (item ?? {}) as Partial<ServerConfig>;
+          return {
+            ...server,
+            tags: Array.isArray(server.tags) ? server.tags : [],
+            group: server.group ?? '默认分组',
+            jump: server.jump ?? null,
+            demo: server.demo ?? false,
+            createdAt: server.createdAt ?? new Date().toISOString(),
+            updatedAt: server.updatedAt ?? new Date().toISOString(),
+          } as ServerConfig;
+        });
+      },
+    });
   }
 
   list(): ServerConfig[] {

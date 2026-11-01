@@ -49,7 +49,7 @@ const api: SubshellApi = {
     saveProvider: (input) => ipcRenderer.invoke('ai:saveProvider', input),
     removeProvider: (id) => ipcRenderer.invoke('ai:removeProvider', id),
     testProvider: (input) => ipcRenderer.invoke('ai:testProvider', input),
-    send: (serverId, text) => ipcRenderer.invoke('ai:send', serverId, text),
+    send: (serverId, text, issueId) => ipcRenderer.invoke('ai:send', serverId, text, issueId),
     cancel: (serverId) => ipcRenderer.invoke('ai:cancel', serverId),
     decide: (serverId, decision) => ipcRenderer.invoke('ai:decide', serverId, decision),
     history: (serverId) => ipcRenderer.invoke('ai:history', serverId),
@@ -59,6 +59,35 @@ const api: SubshellApi = {
   },
   audit: {
     list: (serverId, limit) => ipcRenderer.invoke('audit:list', serverId, limit),
+  },
+  health: {
+    report: (serverId) => ipcRenderer.invoke('health:report', serverId),
+    resolve: (serverId, issueId, status) => ipcRenderer.invoke('health:resolve', serverId, issueId, status),
+    tickets: (serverId) => ipcRenderer.invoke('health:tickets', serverId),
+  },
+  mcp: {
+    info: () => ipcRenderer.invoke('mcp:info'),
+  },
+  update: {
+    check: () => ipcRenderer.invoke('update:check'),
+    open: (url) => ipcRenderer.invoke('update:open', url),
+  },
+  sftp: {
+    home: (serverId) => ipcRenderer.invoke('sftp:home', serverId),
+    list: (serverId, path) => ipcRenderer.invoke('sftp:list', serverId, path),
+    preview: (serverId, path) => ipcRenderer.invoke('sftp:preview', serverId, path),
+    download: (serverId, path) => ipcRenderer.invoke('sftp:download', serverId, path),
+    upload: (serverId, dir) => ipcRenderer.invoke('sftp:upload', serverId, dir),
+    mkdir: (serverId, path) => ipcRenderer.invoke('sftp:mkdir', serverId, path),
+    rename: (serverId, from, to) => ipcRenderer.invoke('sftp:rename', serverId, from, to),
+    remove: (serverId, path, isDir) => ipcRenderer.invoke('sftp:remove', serverId, path, isDir),
+  },
+  tunnels: {
+    list: (serverId) => ipcRenderer.invoke('tunnel:list', serverId),
+    save: (serverId, input) => ipcRenderer.invoke('tunnel:save', serverId, input),
+    start: (id) => ipcRenderer.invoke('tunnel:start', id),
+    stop: (id) => ipcRenderer.invoke('tunnel:stop', id),
+    remove: (serverId, id) => ipcRenderer.invoke('tunnel:remove', serverId, id),
   },
   usage: {
     summary: () => ipcRenderer.invoke('usage:summary'),

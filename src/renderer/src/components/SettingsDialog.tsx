@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react';
-import { Loader2, Plus, Trash2, Zap } from 'lucide-react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Loader2, Plus, RefreshCw, Trash2, Zap } from 'lucide-react';
 import type { ProviderConfig, ProviderInput } from '@shared/types';
 import { Modal } from '../components/Modal';
 import { useApp } from '../store/app';
@@ -7,11 +7,11 @@ import { useI18n } from '../lib/i18n';
 import { api } from '../lib/api';
 import { cn } from '../lib/cn';
 
-const kindLabels: Record<string, string> = {
-  openai: 'OpenAI 兼容',
-  anthropic: 'Anthropic',
-  ollama: 'Ollama',
-  mock: '演示模型',
+const kindLabelKeys: Record<string, string> = {
+  openai: 'settings.provider.kind.openai',
+  anthropic: 'settings.provider.kind.anthropic',
+  ollama: 'settings.provider.kind.ollama',
+  mock: 'settings.provider.kind.mock',
 };
 
 const presets: Record<string, { baseUrl: string; model: string }> = {
@@ -29,6 +29,7 @@ export function ProviderDialog({
   onClose: () => void;
 }) {
   const saveProvider = useApp((state) => state.saveProvider);
+  const { t } = useI18n();
   const [form, setForm] = useState<ProviderInput>(() => ({
     id: editing?.id,
     name: editing?.name ?? '',
@@ -60,8 +61,8 @@ export function ProviderDialog({
       setResult({
         ok: response.ok,
         message: response.ok
-          ? `连接成功${response.latencyMs ? ` · ${response.latencyMs}ms` : ''}${response.message ? ` · ${response.message}` : ''}`
-          : response.error || '连接失败',
+          ? `${t('settings.provider.testOk')}${response.latencyMs ? ` · ${response.latencyMs}ms` : ''}${response.message ? ` · ${response.message}` : ''}`
+          : response.error || t('settings.provider.testFailed'),
       });
     } catch (error) {
       setResult({ ok: false, message: error instanceof Error ? error.message : String(error) });
@@ -72,11 +73,11 @@ export function ProviderDialog({
 
   const submit = async () => {
     if (!form.name.trim() || !form.model.trim()) {
-      setResult({ ok: false, message: '请填写名称与模型名称' });
+      setResult({ ok: false, message: t('settings.provider.needName') });
       return;
     }
     if (form.kind !== 'mock' && !form.baseUrl.trim()) {
-      setResult({ ok: false, message: '请填写 API 地址' });
+      setResult({ ok: false, message: t('settings.provider.needUrl') });
       return;
     }
     setSaving(true);
@@ -91,8 +92,8 @@ export function ProviderDialog({
 
   return (
     <Modal
-      title={editing ? '编辑模型服务商' : '添加模型服务商'}
-      description="支持 OpenAI 兼容接口、Anthropic Messages 与 Ollama。API Key 只保存在系统凭据库。"
+      title={editing ? t('settings.provider.editTitle') : t('settings.provider.addTitle')}
+      description={t('settings.provider.desc')}
       onClose={onClose}
       width="max-w-lg"
       footer={
@@ -100,7 +101,7 @@ export function ProviderDialog({
           <div className="mr-auto flex items-center gap-2">
             <button className="btn" onClick={() => void test()} disabled={testing || form.kind === 'mock'}>
               {testing ? <Loader2 size={13} className="spin" /> : <Zap size={13} />}
-              测试连接
+              {t('settings.provider.test')}
             </button>
             {result && (
               <span className={cn('max-w-[280px] truncate text-[12px]', result.ok ? 'text-[var(--success)]' : 'text-[var(--danger)]')}>
@@ -109,10 +110,10 @@ export function ProviderDialog({
             )}
           </div>
           <button className="btn" onClick={onClose}>
-            取消
+            {t('common.cancel')}
           </button>
           <button className="btn btn-primary" onClick={() => void submit()} disabled={saving}>
-            {saving ? '保存中…' : '保存'}
+            {saving ? t('settings.provider.saving') : t('common.save')}
           </button>
         </>
       }
@@ -130,16 +131,16 @@ export function ProviderDialog({
                   : 'border-[var(--border)] bg-[var(--panel-2)] text-[var(--muted)] hover:text-[var(--text)]',
               )}
             >
-              {kindLabels[kind]}
+              {t(kindLabelKeys[kind] ?? 'settings.provider.kind.openai')}
             </button>
           ))}
         </div>
 
         <div>
-          <label className="label">名称</label>
+          <label className="label">{t('settings.provider.name')}</label>
           <input
             className="input"
-            placeholder="例如：DeepSeek"
+            placeholder={t('settings.provider.namePlaceholder')}
             value={form.name}
             onChange={(event) => setForm({ ...form, name: event.target.value })}
           />
@@ -148,7 +149,7 @@ export function ProviderDialog({
         {form.kind !== 'mock' && (
           <>
             <div>
-              <label className="label">API 地址</label>
+              <label className="label">{t('settings.provider.baseUrl')}</label>
               <input
                 className="input mono text-[12.5px]"
                 placeholder="https://api.deepseek.com/v1"
@@ -168,7 +169,7 @@ export function ProviderDialog({
               </div>
             </div>
             <div>
-              <label className="label">模型</label>
+              <label className="label">{t('settings.provider.model')}</label>
               <input
                 className="input mono text-[12.5px]"
                 placeholder="deepseek-chat"
@@ -177,7 +178,10 @@ export function ProviderDialog({
               />
             </div>
             <div>
-              <label className="label">API Key {editing?.hasApiKey ? '（已保存，留空不修改）' : ''}</label>
+              <label className="label">
+                {t('settings.provider.apiKey')}
+                {editing?.hasApiKey ? ` ${t('settings.provider.apiKeySaved')}` : ''}
+              </label>
               <input
                 className="input"
                 type="password"
@@ -192,7 +196,7 @@ export function ProviderDialog({
 
         {form.kind === 'mock' && (
           <div className="rounded-lg border border-[var(--border)] bg-[var(--panel-2)] px-3 py-2.5 text-[12.5px] leading-relaxed text-[var(--muted)]">
-            演示模型不需要 API Key，会按固定剧本调用工具，用于体验完整流程与界面验收。
+            {t('settings.provider.mockDesc')}
           </div>
         )}
       </div>
@@ -207,9 +211,26 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const saveSettings = useApp((state) => state.saveSettings);
   const removeProvider = useApp((state) => state.removeProvider);
   const setActiveProvider = useApp((state) => state.setActiveProvider);
+  const notify = useApp((state) => state.notify);
   const [editingProvider, setEditingProvider] = useState<ProviderConfig | 'new' | null>(null);
+  const [mcp, setMcp] = useState<{ running: boolean; port: number; token: string; endpoint: string } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [update, setUpdate] = useState<{ hasUpdate: boolean; latest: string; url: string; error?: string } | null>(null);
 
   const { t } = useI18n();
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.mcp
+      .info()
+      .then((next) => {
+        if (!cancelled) setMcp(next);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [settings?.mcpEnabled, settings?.mcpPort]);
 
   if (!settings) return null;
 
@@ -250,7 +271,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                         )}
                       </span>
                       <span className="block truncate text-[11.5px] text-[var(--muted-2)]">
-                        {kindLabels[provider.kind]} · {provider.model}
+                        {t(kindLabelKeys[provider.kind] ?? 'settings.provider.kind.openai')} · {provider.model}
                         {provider.hasApiKey ? ` · ${t('settings.provider.keySaved')}` : ''}
                       </span>
                     </span>
@@ -332,7 +353,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               >
                 {[5, 10, 15, 30, 60].map((value) => (
                   <option key={value} value={value}>
-                    {value} 秒
+                    {t('settings.monitor.seconds', { value })}
                   </option>
                 ))}
               </select>
@@ -371,6 +392,60 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           </div>
         </section>
 
+        <section className="mb-6">
+          <div className="mb-2">
+            <h3 className="text-[13.5px] font-semibold text-[var(--text)]">{t('settings.mcp.title')}</h3>
+            <p className="text-[12px] text-[var(--muted-2)]">{t('settings.mcp.desc')}</p>
+          </div>
+          <div className="divide-y divide-[var(--border)] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--panel-2)]">
+            <SettingRow title={t('settings.mcp.enable')} description={t('settings.mcp.enableDesc')}>
+              <Switch checked={settings.mcpEnabled} onChange={(value) => void saveSettings({ mcpEnabled: value })} />
+            </SettingRow>
+            <SettingRow title={t('settings.mcp.port')} description={t('settings.mcp.portDesc')}>
+              <input
+                type="number"
+                className="input mono h-7 !w-24 text-[12px]"
+                defaultValue={settings.mcpPort}
+                onBlur={(event) => {
+                  const port = Number.parseInt(event.target.value, 10);
+                  if (Number.isFinite(port) && port > 0 && port < 65536 && port !== settings.mcpPort) {
+                    void saveSettings({ mcpPort: port });
+                  }
+                }}
+              />
+            </SettingRow>
+            <SettingRow title={t('settings.mcp.mutations')} description={t('settings.mcp.mutationsDesc')}>
+              <Switch
+                checked={settings.mcpAllowMutations}
+                onChange={(value) => void saveSettings({ mcpAllowMutations: value })}
+              />
+            </SettingRow>
+          </div>
+          {mcp && (
+            <div className="mt-2 space-y-1.5 rounded-lg border border-[var(--border)] bg-[var(--panel-2)] px-3 py-2.5 text-[12px]">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[var(--muted-2)]">{t('settings.mcp.endpoint')}</span>
+                <span className="mono truncate text-[var(--text)]">
+                  {mcp.running ? mcp.endpoint : t('settings.mcp.stopped')}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[var(--muted-2)]">{t('settings.mcp.token')}</span>
+                <span className="mono truncate text-[var(--muted)]">{mcp.token}</span>
+              </div>
+              <button
+                className="btn h-7 px-2 text-[11.5px]"
+                onClick={() => {
+                  void navigator.clipboard.writeText(mcp.token);
+                  notify('success', t('settings.mcp.copied'));
+                }}
+              >
+                {t('settings.mcp.copy')}
+              </button>
+            </div>
+          )}
+        </section>
+
         <section>
           <h3 className="mb-2 text-[13.5px] font-semibold text-[var(--text)]">{t('settings.about.title')}</h3>
           <div className="rounded-lg border border-[var(--border)] bg-[var(--panel-2)] px-3 py-2.5 text-[12.5px] text-[var(--muted)]">
@@ -385,6 +460,46 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             <div className="flex justify-between gap-4 py-0.5">
               <span className="flex-none text-[var(--muted-2)]">{t('settings.about.dataDir')}</span>
               <span className="truncate text-right">{info?.dataDir ?? '—'}</span>
+            </div>
+            <div className="mt-2 flex items-center justify-between border-t border-[var(--border)] pt-2">
+              <div className="min-w-0 flex-1 pr-3">
+                <div className="text-[12px] text-[var(--text)]">{t('settings.update.auto')}</div>
+                <div className="text-[11.5px] text-[var(--muted-2)]">{t('settings.update.autoDesc')}</div>
+              </div>
+              <Switch checked={settings.autoCheckUpdate} onChange={(value) => void saveSettings({ autoCheckUpdate: value })} />
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-2">
+              <button
+                className="btn h-7 px-2.5 text-[11.5px]"
+                disabled={checking}
+                onClick={() => {
+                  void (async () => {
+                    setChecking(true);
+                    try {
+                      setUpdate(await api.update.check());
+                    } finally {
+                      setChecking(false);
+                    }
+                  })();
+                }}
+              >
+                {checking ? <Loader2 size={11} className="spin" /> : <RefreshCw size={11} />}
+                {t('settings.update.check')}
+              </button>
+              {update && (
+                <span className="text-[11.5px] text-[var(--muted-2)]">
+                  {update.error
+                    ? t('settings.update.failed')
+                    : update.hasUpdate
+                      ? t('settings.update.available', { version: update.latest })
+                      : t('settings.update.latest')}
+                </span>
+              )}
+              {update?.hasUpdate && update.url && (
+                <button className="text-[11.5px] text-[var(--accent)] hover:underline" onClick={() => void api.update.open(update.url)}>
+                  {t('settings.update.download')}
+                </button>
+              )}
             </div>
           </div>
         </section>

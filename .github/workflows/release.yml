@@ -42,8 +42,17 @@ jobs:
       - name: Build renderer and main
         run: npm run build
 
+      # 未配置签名 secrets 时 electron-builder 会产出未签名包（仍然可用，
+      # 但 Windows 会提示「未知发布者」、macOS 需要右键打开）。配置方法见 docs/RELEASING.md。
       - name: Package
-        run: npx electron-builder --${{ matrix.target }} --publish never
+        run: npx electron-builder --${{ matrix.target }} --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

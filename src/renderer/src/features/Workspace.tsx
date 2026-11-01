@@ -1,8 +1,9 @@
-﻿import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Activity,
-  ChevronDown,
   Ellipsis,
+  FolderOpen,
+  HeartPulse,
   LayoutDashboard,
   MessageSquare,
   Plug,
@@ -24,13 +25,17 @@ import { ConnectionDot } from '../components/ConnectionDot';
 import { ConfirmDialog } from '../components/Modal';
 import { Welcome } from './Welcome';
 import { Overview } from './Overview';
+import { HealthView } from './HealthView';
+import { FileBrowser } from './FileBrowser';
 import { TerminalView } from './TerminalView';
 import { Assistant } from './Assistant';
-import { formatDateTime, formatDuration } from '../lib/format';
+import { formatDuration } from '../lib/format';
 import type { WorkspaceView } from '../store/app';
 
 const views: { key: WorkspaceView; labelKey: string; icon: typeof LayoutDashboard }[] = [
   { key: 'overview', labelKey: 'workspace.view.overview', icon: LayoutDashboard },
+  { key: 'health', labelKey: 'workspace.view.health', icon: HeartPulse },
+  { key: 'file', labelKey: 'workspace.view.files', icon: FolderOpen },
   { key: 'terminal', labelKey: 'workspace.view.terminal', icon: TerminalSquare },
   { key: 'assistant', labelKey: 'workspace.view.assistant', icon: MessageSquare },
 ];
@@ -86,6 +91,12 @@ export function Workspace() {
         <div className={cn('absolute inset-0', view === 'overview' ? 'visible' : 'invisible pointer-events-none')}>
           <Overview serverId={server.id} />
         </div>
+        <div className={cn('absolute inset-0', view === 'health' ? 'visible' : 'invisible pointer-events-none')}>
+          <HealthView serverId={server.id} />
+        </div>
+        <div className={cn('absolute inset-0', view === 'file' ? 'visible' : 'invisible pointer-events-none')}>
+          <FileBrowser serverId={server.id} active={view === 'file'} />
+        </div>
         <div className={cn('absolute inset-0', view === 'terminal' ? 'visible' : 'invisible pointer-events-none')}>
           <TerminalView serverId={server.id} active={view === 'terminal'} />
         </div>
@@ -113,7 +124,7 @@ function ServerHeader({ serverId }: { serverId: string }) {
   const setDialog = useApp((state) => state.setDialog);
   const deleteServer = useApp((state) => state.deleteServer);
   const summarize = useApp((state) => state.summarize);
-  const { t } = useI18n();
+  const { t, language } = useI18n();
 
   const server = servers.find((item) => item.id === serverId);
   const connection = connections[serverId];
@@ -136,7 +147,7 @@ function ServerHeader({ serverId }: { serverId: string }) {
   if (!server) return null;
   const connected = connection?.state === 'connected';
   const latest = runtime?.samples.at(-1);
-  const uptime = latest ? formatDuration(latest.uptimeSeconds) : null;
+  const uptime = latest ? formatDuration(latest.uptimeSeconds, language) : null;
 
   return (
     <div className="flex h-[58px] flex-none items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4">
@@ -241,6 +252,14 @@ function ServerHeader({ serverId }: { serverId: string }) {
                 onClick={() => {
                   setMenuOpen(false);
                   void summarize(serverId);
+                }}
+              />
+              <MenuItem
+                icon={PlugZap}
+                label={t('workspace.menu.tunnel')}
+                onClick={() => {
+                  setMenuOpen(false);
+                  setDialog('tunnel');
                 }}
               />
               <MenuItem

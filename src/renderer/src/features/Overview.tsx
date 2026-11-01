@@ -6,6 +6,7 @@ import {
   Cpu,
   Database,
   HardDrive,
+  HeartPulse,
   MemoryStick,
   Network,
   RefreshCw,
@@ -19,7 +20,6 @@ import { useApp } from '../store/app';
 import { useI18n } from '../lib/i18n';
 import { Sparkline } from '../components/Sparkline';
 import { Markdown } from '../components/Markdown';
-import { ConnectionDot } from '../components/ConnectionDot';
 import { cn } from '../lib/cn';
 import {
   formatKb,
@@ -27,7 +27,7 @@ import {
   formatRate,
   formatRelative,
   serviceStateColor,
-  serviceStateLabel,
+  serviceStateKey,
   severityColor,
 } from '../lib/format';
 
@@ -44,14 +44,14 @@ export function Overview({ serverId }: { serverId: string }) {
         <Server size={26} className="text-[var(--muted-2)]" />
         <div className="text-[13.5px]">
           {connection?.state === 'connecting'
-            ? '正在建立连接并采集数据…'
+            ? t('overview.connecting')
             : connection?.state === 'error'
-              ? `连接失败：${connection.error ?? '未知错误'}`
-              : '尚未连接到服务器'}
+              ? t('overview.connectFailed', { error: connection.error ?? '—' })
+              : t('overview.notConnected')}
         </div>
         {connection?.state !== 'connecting' && (
           <button className="btn btn-primary" onClick={() => void connect(serverId)}>
-            连接服务器
+            {t('overview.connect')}
           </button>
         )}
       </div>
@@ -64,12 +64,13 @@ export function Overview({ serverId }: { serverId: string }) {
 
   return (
     <div className="scroll-area h-full px-4 py-4">
+      <HealthStrip serverId={serverId} />
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <MetricCard
           icon={Cpu}
           label={t('overview.metric.cpu')}
           value={formatPercent(latest.cpuPercent, 1)}
-          sub={`负载 ${latest.load1.toFixed(2)}`}
+          sub={t('overview.load1', { value: latest.load1.toFixed(2) })}
           percent={latest.cpuPercent}
           color="#2dd4bf"
           spark={window.map((sample) => sample.cpuPercent)}
@@ -87,7 +88,7 @@ export function Overview({ serverId }: { serverId: string }) {
           icon={HardDrive}
           label={t('overview.metric.disk')}
           value={formatPercent(latest.diskUsedPercent, 1)}
-          sub={`剩余 ${formatKb(latest.diskTotalKb - latest.diskUsedKb)}`}
+          sub={t('overview.diskFree', { value: formatKb(latest.diskTotalKb - latest.diskUsedKb) })}
           percent={latest.diskUsedPercent}
           color="#a78bfa"
           spark={window.map((sample) => sample.diskUsedPercent)}
@@ -97,7 +98,7 @@ export function Overview({ serverId }: { serverId: string }) {
           icon={Activity}
           label={t('overview.metric.load')}
           value={latest.load1.toFixed(2)}
-          sub={`${profile?.hardware.cpuCores ?? '?'} 核 · 5m ${latest.load5.toFixed(2)}`}
+          sub={t('overview.cores', { cores: profile?.hardware.cpuCores ?? '?', load: latest.load5.toFixed(2) })}
           percent={Math.min(100, (latest.load1 / Math.max(1, profile?.hardware.cpuCores ?? 1)) * 100)}
           color="#fbbf24"
           spark={window.map((sample) => sample.load1)}
@@ -117,11 +118,49 @@ export function Overview({ serverId }: { serverId: string }) {
 
       <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-3">
         <div className="xl:col-span-2">
-          <InfoPanel profile={profile ?? null} running={latest} serverId={serverId} />
+          <InfoPanel profile={profile ?? null} running={latest} />
         </div>
         <PortPanel serverId={serverId} />
       </div>
     </div>
+  );
+}
+
+/** 概览页顶部的体检条：一眼看到健康分与问题数量，点击进入体检页。 */
+function HealthStrip({ serverId }: { serverId: string }) {
+  const { t } = useI18n();
+  const report = useApp((state) => state.reports[serverId]);
+  const setView = useApp((state) => state.setView);
+  if (!report) return null;
+
+  const { score, grade, critical, warning, info } = report.score;
+  const color =
+    grade === 'excellent' ? '#34d399' : grade === 'good' ? '#2dd4bf' : grade === 'fair' ? '#fbbf24' : '#f87171';
+
+  return (
+    <button
+      onClick={() => setView('health')}
+      className="panel-2 mb-3 flex w-full flex-wrap items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:border-[var(--border-strong)]"
+    >
+      <HeartPulse size={14} className="text-[var(--accent)]" />
+      <span className="text-[12px] text-[var(--muted)]">{t('health.title')}</span>
+      <span className="text-[18px] font-semibold leading-none" style={{ color }}>
+        {score}
+      </span>
+      <span className="text-[12px] text-[var(--muted-2)]">{t(`health.grade.${grade}`)}</span>
+      <span className="flex items-center gap-2.5 text-[11.5px]">
+        <span className="text-[var(--danger)]">
+          {t('health.stat.critical')} {critical}
+        </span>
+        <span className="text-[var(--warning)]">
+          {t('health.stat.warning')} {warning}
+        </span>
+        <span className="text-[var(--blue)]">
+          {t('health.stat.info')} {info}
+        </span>
+      </span>
+      <span className="ml-auto text-[11.5px] text-[var(--accent)]">{t('health.action.recheck')} →</span>
+    </button>
   );
 }
 
@@ -147,6 +186,7 @@ function MetricCard({
   valueIsPercent?: boolean;
 }) {
   const abnormal = valueIsPercent && percent >= 90;
+  const { t } = useI18n();
   return (
     <div className="panel-2 relative overflow-hidden p-3.5">
       <div className="flex items-center justify-between">
@@ -157,7 +197,7 @@ function MetricCard({
         {abnormal && (
           <span className="flex items-center gap-1 text-[11px] text-[var(--warning)]">
             <AlertTriangle size={10} />
-            偏高
+            {t('overview.high')}
           </span>
         )}
       </div>
@@ -184,6 +224,7 @@ function SummaryCard({ serverId }: { serverId: string }) {
   const summarize = useApp((state) => state.summarize);
   const agents = useApp((state) => state.agents[serverId]);
   const [loading, setLoading] = useState(false);
+  const { t, language } = useI18n();
   const summary = runtime?.summary?.text ?? profile?.summary ?? '';
   const ts = runtime?.summary?.ts;
 
@@ -201,13 +242,13 @@ function SummaryCard({ serverId }: { serverId: string }) {
       <header className="flex items-center justify-between">
         <h3 className="flex items-center gap-1.5 text-[12.5px] font-semibold text-[var(--text)]">
           <Sparkles size={13} className="text-[var(--accent)]" />
-          AI 状态摘要
+          {t('overview.summary.title')}
         </h3>
         <button
           className="btn btn-ghost h-6 w-6 !p-0"
           onClick={() => void refresh()}
           disabled={loading || agents?.state === 'thinking'}
-          title="重新生成"
+          title={t('overview.summary.regenerate')}
         >
           <RefreshCw size={12} className={cn(loading && 'spin')} />
         </button>
@@ -218,18 +259,21 @@ function SummaryCard({ serverId }: { serverId: string }) {
             <Markdown content={summary} />
           </div>
         ) : (
-          <p className="text-[12.5px] leading-relaxed text-[var(--muted-2)]">
-            还没有生成摘要。连接服务器并完成侦察后，AI 会总结当前状态。
-          </p>
+          <p className="text-[12.5px] leading-relaxed text-[var(--muted-2)]">{t('overview.summary.empty')}</p>
         )}
       </div>
-      {ts && <div className="mt-2 text-[11px] text-[var(--muted-2)]">更新于 {formatRelative(ts)}</div>}
+      {ts && (
+        <div className="mt-2 text-[11px] text-[var(--muted-2)]">
+          {t('overview.summary.updated', { time: formatRelative(ts, language) })}
+        </div>
+      )}
     </section>
   );
 }
 
 function EventPanel({ serverId }: { serverId: string }) {
   const runtime = useApp((state) => state.runtimes[serverId]);
+  const { t, language } = useI18n();
   const events = runtime?.events.slice(0, 8) ?? [];
 
   return (
@@ -237,20 +281,20 @@ function EventPanel({ serverId }: { serverId: string }) {
       <header className="flex items-center justify-between">
         <h3 className="flex items-center gap-1.5 text-[12.5px] font-semibold text-[var(--text)]">
           <AlertTriangle size={13} className="text-[var(--warning)]" />
-          最近事件
+          {t('overview.events.title')}
         </h3>
-        <span className="text-[11px] text-[var(--muted-2)]">{runtime?.events.length ?? 0} 条</span>
+        <span className="text-[11px] text-[var(--muted-2)]">
+          {t('overview.events.total', { count: runtime?.events.length ?? 0 })}
+        </span>
       </header>
       <div className="mt-2 flex-1 space-y-2">
-        {events.length === 0 && (
-          <p className="text-[12.5px] text-[var(--muted-2)]">暂无异常事件，服务器运行平稳。</p>
-        )}
+        {events.length === 0 && <p className="text-[12.5px] text-[var(--muted-2)]">{t('overview.events.empty')}</p>}
         {events.map((event) => (
           <div key={event.id} className="flex items-start gap-2">
             <span className={cn('mt-1.5 dot flex-none', severityColor(event.severity))} />
             <div className="min-w-0">
               <div className="truncate text-[12.5px] text-[var(--text)]">{event.title}</div>
-              <div className="text-[11px] text-[var(--muted-2)]">{formatRelative(event.ts)}</div>
+              <div className="text-[11px] text-[var(--muted-2)]">{formatRelative(event.ts, language)}</div>
             </div>
           </div>
         ))}
@@ -259,11 +303,11 @@ function EventPanel({ serverId }: { serverId: string }) {
   );
 }
 
-const serviceFilters: { key: ServiceState | 'all'; label: string }[] = [
-  { key: 'all', label: '全部' },
-  { key: 'running', label: '运行中' },
-  { key: 'failed', label: '失败' },
-  { key: 'stopped', label: '已停止' },
+const serviceFilters: { key: ServiceState | 'all'; labelKey: string }[] = [
+  { key: 'all', labelKey: 'overview.services.all' },
+  { key: 'running', labelKey: 'overview.services.running' },
+  { key: 'failed', labelKey: 'overview.services.failed' },
+  { key: 'stopped', labelKey: 'overview.services.stopped' },
 ];
 
 function ServicePanel({
@@ -313,7 +357,7 @@ function ServicePanel({
                   : 'text-[var(--muted-2)] hover:text-[var(--text)]',
               )}
             >
-              {item.label}
+              {t(item.labelKey)}
             </button>
           ))}
         </div>
@@ -323,17 +367,17 @@ function ServicePanel({
         <table className="w-full border-collapse text-[12.5px]">
           <thead className="sticky top-0 z-10 bg-[var(--panel-2)] text-[11px] uppercase tracking-wider text-[var(--muted-2)]">
             <tr>
-              <th className="px-4 py-2 text-left font-medium">服务</th>
-              <th className="px-2 py-2 text-left font-medium">状态</th>
-              <th className="px-2 py-2 text-left font-medium">端口</th>
-              <th className="px-4 py-2 text-right font-medium">操作</th>
+              <th className="px-4 py-2 text-left font-medium">{t('overview.services.col.service')}</th>
+              <th className="px-2 py-2 text-left font-medium">{t('overview.services.col.state')}</th>
+              <th className="px-2 py-2 text-left font-medium">{t('overview.services.col.port')}</th>
+              <th className="px-4 py-2 text-right font-medium">{t('overview.services.col.actions')}</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && (
               <tr>
                 <td colSpan={4} className="px-4 py-8 text-center text-[12.5px] text-[var(--muted-2)]">
-                  没有匹配的服务
+                  {t('overview.services.empty')}
                 </td>
               </tr>
             )}
@@ -343,7 +387,9 @@ function ServicePanel({
                   <div className="flex items-center gap-2">
                     <span className="truncate font-medium text-[var(--text)]">{service.name}</span>
                     {service.kind === 'docker' && (
-                      <span className="rounded bg-sky-400/10 px-1 text-[9px] text-[var(--blue)]">容器</span>
+                      <span className="rounded bg-sky-400/10 px-1 text-[9px] text-[var(--blue)]">
+                        {t('overview.services.container')}
+                      </span>
                     )}
                   </div>
                   {service.description && (
@@ -358,7 +404,7 @@ function ServicePanel({
                       'bg-slate-500': service.state === 'stopped',
                       'bg-[var(--warning)]': service.state === 'unknown',
                     })} />
-                    {serviceStateLabel(service.state)}
+                    {t(serviceStateKey(service.state))}
                   </span>
                 </td>
                 <td className="px-2 py-2 text-[12px] text-[var(--muted-2)]">
@@ -370,30 +416,30 @@ function ServicePanel({
                       <>
                         <button
                           className="rounded px-1.5 py-0.5 text-[11.5px] text-[var(--muted)] hover:bg-[var(--panel-3)] hover:text-[var(--text)]"
-                          onClick={() => ask(`请重启服务 ${service.name}，并在完成后确认它已恢复正常。`)}
+                          onClick={() => ask(t('overview.services.ask.restart', { name: service.name }))}
                         >
-                          重启
+                          {t('overview.services.action.restart')}
                         </button>
                         <button
                           className="rounded px-1.5 py-0.5 text-[11.5px] text-[var(--muted)] hover:bg-[var(--panel-3)] hover:text-[var(--text)]"
-                          onClick={() => ask(`请停止服务 ${service.name}，并确认它已停止。`)}
+                          onClick={() => ask(t('overview.services.ask.stop', { name: service.name }))}
                         >
-                          停止
+                          {t('overview.services.action.stop')}
                         </button>
                       </>
                     ) : (
                       <button
                         className="rounded px-1.5 py-0.5 text-[11.5px] text-emerald-300/90 hover:bg-[var(--panel-3)] hover:text-[var(--success)]"
-                        onClick={() => ask(`请启动服务 ${service.name}，并确认它已正常运行。`)}
+                        onClick={() => ask(t('overview.services.ask.start', { name: service.name }))}
                       >
-                        启动
+                        {t('overview.services.action.start')}
                       </button>
                     )}
                     <button
                       className="rounded px-1.5 py-0.5 text-[11.5px] text-[var(--muted)] hover:bg-[var(--panel-3)] hover:text-[var(--text)]"
-                      onClick={() => ask(`请查看服务 ${service.name} 最近 50 行日志，分析是否有异常。`)}
+                      onClick={() => ask(t('overview.services.ask.logs', { name: service.name }))}
                     >
-                      日志
+                      {t('overview.services.action.logs')}
                     </button>
                   </div>
                 </td>
@@ -409,46 +455,45 @@ function ServicePanel({
 function InfoPanel({
   profile,
   running,
-  serverId,
 }: {
   profile: ServerProfile | null;
   running: { uptimeSeconds: number; processCount: number; netRxBytesPerSec: number; netTxBytesPerSec: number };
-  serverId: string;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const setDialog = useApp((state) => state.setDialog);
   const rows = [
     {
       icon: Server,
-      label: '系统',
+      label: t('overview.info.system'),
       value: profile ? `${profile.os.name} ${profile.os.version}` : '—',
     },
     {
       icon: Cpu,
-      label: '处理器',
+      label: t('overview.info.cpu'),
       value: profile ? `${profile.hardware.cpuModel || 'Unknown'} × ${profile.hardware.cpuCores}` : '—',
     },
     {
       icon: MemoryStick,
-      label: '内存',
+      label: t('overview.info.memory'),
       value: profile ? formatKb(profile.hardware.memTotalKb) : '—',
     },
     {
       icon: HardDrive,
-      label: '磁盘',
+      label: t('overview.info.disk'),
       value: profile ? `${formatKb(profile.hardware.diskUsedKb)} / ${formatKb(profile.hardware.diskTotalKb)}` : '—',
     },
     {
       icon: Wifi,
-      label: '网络',
-      value: profile?.network.interfaces
-        .filter((item) => item.name !== 'lo')
-        .map((item) => `${item.name} ${item.addresses[0] ?? ''}`)
-        .join(' · ') || '—',
+      label: t('overview.info.network'),
+      value:
+        profile?.network.interfaces
+          .filter((item) => item.name !== 'lo')
+          .map((item) => `${item.name} ${item.addresses[0] ?? ''}`)
+          .join(' · ') || '—',
     },
     {
       icon: Network,
-      label: '流量',
+      label: t('overview.info.traffic'),
       value: `↓ ${formatRate(running.netRxBytesPerSec)} · ↑ ${formatRate(running.netTxBytesPerSec)}`,
     },
   ];
@@ -460,14 +505,14 @@ function InfoPanel({
         <div className="flex items-center gap-2">
           {profile && (
             <span className="text-[11px] text-[var(--muted-2)]">
-              扫描于 {formatRelative(new Date(profile.scannedAt).getTime())}
+              {t('overview.info.scanned', { time: formatRelative(new Date(profile.scannedAt).getTime(), language) })}
             </span>
           )}
           <button
             className="text-[11.5px] text-[var(--accent)] hover:underline"
             onClick={() => setDialog('profile')}
           >
-            查看完整档案
+            {t('overview.info.viewProfile')}
           </button>
         </div>
       </div>
@@ -484,7 +529,7 @@ function InfoPanel({
       </div>
       {profile && profile.notes.trim() && (
         <div className="mt-3 border-t border-[var(--border)] pt-3">
-          <div className="text-[11px] uppercase tracking-wide text-[var(--muted-2)]">运维笔记</div>
+          <div className="text-[11px] uppercase tracking-wide text-[var(--muted-2)]">{t('overview.info.notes')}</div>
           <div className="mt-1 line-clamp-4 text-[12.5px] leading-relaxed text-[var(--muted)]">
             <Markdown content={profile.notes} />
           </div>
@@ -533,7 +578,7 @@ function PortPanel({ serverId }: { serverId: string }) {
             )}
           >
             <ArrowUpRight size={13} />
-            监听端口
+            {t('overview.ports.title')}
           </button>
           <span className="text-[var(--muted-2)]">/</span>
           <button
@@ -544,11 +589,11 @@ function PortPanel({ serverId }: { serverId: string }) {
             )}
           >
             <Activity size={13} />
-            进程
+            {t('overview.ports.processes')}
           </button>
         </div>
         <span className="text-[11px] text-[var(--muted-2)]">
-          {tab === 'ports' ? `${ports.length} 个` : `${processes.length} 个`}
+          {t('overview.ports.count', { count: tab === 'ports' ? ports.length : processes.length })}
         </span>
       </div>
 

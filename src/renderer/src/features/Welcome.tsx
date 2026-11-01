@@ -1,4 +1,5 @@
-import { Radar, ServerCog, Sparkles, TerminalSquare, Plus } from 'lucide-react';
+import { useState } from 'react';
+import { Loader2, PlayCircle, Plus, Radar, ServerCog, Sparkles, TerminalSquare } from 'lucide-react';
 import { useApp } from '../store/app';
 import { useI18n } from '../lib/i18n';
 
@@ -11,7 +12,20 @@ const features = [
 export function Welcome() {
   const setDialog = useApp((state) => state.setDialog);
   const servers = useApp((state) => state.servers);
+  const startDemo = useApp((state) => state.startDemo);
   const { t } = useI18n();
+  const [starting, setStarting] = useState(false);
+
+  const launchDemo = async () => {
+    if (starting) return;
+    setStarting(true);
+    try {
+      // 失败提示由 store 内的 notify 统一弹出，这里只负责按钮状态。
+      await startDemo();
+    } finally {
+      setStarting(false);
+    }
+  };
 
   return (
     <div className="relative flex h-full items-center justify-center overflow-hidden bg-[var(--bg)] px-8">
@@ -37,14 +51,18 @@ export function Welcome() {
           ))}
         </div>
 
-        <div className="mt-7 flex items-center gap-2.5">
-          <button className="btn btn-primary h-9 px-4" onClick={() => setDialog('server')}>
+        <div className="mt-7 flex flex-wrap items-center gap-2.5">
+          <button className="btn btn-primary h-9 px-4" onClick={() => void launchDemo()} disabled={starting}>
+            {starting ? <Loader2 size={15} className="spin" /> : <PlayCircle size={15} />}
+            {starting ? t('welcome.demoStarting') : t('welcome.demo')}
+          </button>
+          <button className="btn h-9 px-4" onClick={() => setDialog('server')} disabled={starting}>
             <Plus size={15} />
             {t('welcome.addServer')}
           </button>
         </div>
-        <p className="mt-3 text-[12px] text-[var(--muted-2)]">
-          {servers.length > 0 ? t('welcome.hint.hasServers') : t('welcome.hint.empty')}
+        <p className="mt-3 text-[12px] leading-relaxed text-[var(--muted-2)]">
+          {servers.length > 0 ? t('welcome.hint.hasServers') : t('welcome.demoHint')}
         </p>
       </div>
     </div>

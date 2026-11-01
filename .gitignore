@@ -1,6 +1,7 @@
 node_modules/
 out/
 release/
+coverage/
 .tmp*/
 *.log
 *.tsbuildinfo
@@ -9,3 +10,9 @@ Thumbs.db
 .npm-cache/
 .electron-cache/
 .electron-builder-cache/
+# 签名材料绝不入库
+*.pfx
+*.p12
+*.p8
+*.cer
+*.key

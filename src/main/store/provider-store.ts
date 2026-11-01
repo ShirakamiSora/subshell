@@ -11,7 +11,10 @@ export class ProviderStore {
     dataDir: string,
     private readonly secrets: SecretStore,
   ) {
-    this.store = new JsonStore<ProviderConfig[]>(`${dataDir}/providers.json`, () => []);
+    this.store = new JsonStore<ProviderConfig[]>(`${dataDir}/providers.json`, () => [], {
+      version: 2,
+      migrate: (data) => (Array.isArray(data) ? (data as ProviderConfig[]) : []),
+    });
   }
 
   list(): ProviderConfig[] {

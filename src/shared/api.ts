@@ -11,6 +11,8 @@ import type {
   DemoStatus,
   ExecOptions,
   ExecResult,
+  HealthReport,
+  IssueStatus,
   MetricSample,
   MonitorEvent,
   PortInfo,
@@ -18,10 +20,13 @@ import type {
   ProviderConfig,
   ProviderInput,
   RealtimePayload,
+  RemoteEntry,
   ServerConfig,
   ServerProfile,
   ServerRuntime,
   ServiceInfo,
+  TicketRecord,
+  TunnelStatus,
 } from './types';
 
 export interface ServerInput {
@@ -61,6 +66,7 @@ export interface EventMap {
   };
   'profile:update': ServerProfile;
   'agent:event': AgentStreamEvent;
+  'health:update': HealthReport;
   'servers:update': ServerConfig[];
   'app:notice': { level: 'info' | 'warning' | 'error'; message: string };
 }
@@ -116,7 +122,7 @@ export interface SubshellApi {
     saveProvider(input: ProviderInput): Promise<ProviderConfig>;
     removeProvider(id: string): Promise<void>;
     testProvider(input: ProviderInput): Promise<TestResult>;
-    send(serverId: string, text: string): Promise<{ messageId: string }>;
+    send(serverId: string, text: string, issueId?: string): Promise<{ messageId: string }>;
     cancel(serverId: string): Promise<void>;
     decide(serverId: string, decision: ApprovalDecision): Promise<void>;
     history(serverId: string): Promise<ChatMessage[]>;
@@ -126,6 +132,46 @@ export interface SubshellApi {
   };
   audit: {
     list(serverId?: string, limit?: number): Promise<AuditEntry[]>;
+  };
+  health: {
+    report(serverId: string): Promise<HealthReport>;
+    resolve(serverId: string, issueId: string, status: IssueStatus): Promise<HealthReport>;
+    tickets(serverId: string): Promise<TicketRecord[]>;
+  };
+  mcp: {
+    info(): Promise<{ running: boolean; port: number; token: string; mutationEnabled: boolean; endpoint: string }>;
+  };
+  update: {
+    check(): Promise<{
+      current: string;
+      latest: string;
+      hasUpdate: boolean;
+      url: string;
+      notes?: string;
+      checkedAt: number;
+      error?: string;
+    }>;
+    open(url: string): Promise<void>;
+  };
+  sftp: {
+    home(serverId: string): Promise<string>;
+    list(serverId: string, path: string): Promise<RemoteEntry[]>;
+    preview(serverId: string, path: string): Promise<{ ok: boolean; content?: string; binary?: boolean; error?: string }>;
+    download(serverId: string, path: string): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
+    upload(serverId: string, dir: string): Promise<{ ok: boolean; files?: string[]; canceled?: boolean; error?: string }>;
+    mkdir(serverId: string, path: string): Promise<void>;
+    rename(serverId: string, from: string, to: string): Promise<void>;
+    remove(serverId: string, path: string, isDir: boolean): Promise<void>;
+  };
+  tunnels: {
+    list(serverId: string): Promise<TunnelStatus[]>;
+    save(
+      serverId: string,
+      input: { id?: string; label?: string; localPort: number; remoteHost: string; remotePort: number },
+    ): Promise<TunnelStatus[]>;
+    start(id: string): Promise<void>;
+    stop(id: string): Promise<void>;
+    remove(serverId: string, id: string): Promise<TunnelStatus[]>;
   };
   usage: {
     summary(): Promise<import('./types').UsageSummary>;

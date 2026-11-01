@@ -8,8 +8,6 @@ import {
   Settings2,
   Sparkles,
   Square,
-  TerminalSquare,
-  Wrench,
 } from 'lucide-react';
 import { UsageDialog } from '../components/UsageDialog';
 import type { AgentRunState, ChatMessage } from '@shared/types';
@@ -17,7 +15,6 @@ import { useApp } from '../store/app';
 import { useI18n } from '../lib/i18n';
 import { Markdown } from '../components/Markdown';
 import { ToolCallCard } from './ToolCallCard';
-import { cn } from '../lib/cn';
 import { formatTime } from '../lib/format';
 
 const EMPTY_CHAT: ChatMessage[] = [];

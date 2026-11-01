@@ -1,5 +1,6 @@
 import type { ChatOptions, ChatResult, Provider, ProviderMessage, ToolCallRequest } from './types';
-import { ProviderError, sseData } from './types';
+import { sseData } from './types';
+import { fetchProvider } from './request';
 
 interface OpenAiDelta {
   content?: string | null;
@@ -58,22 +59,21 @@ export class OpenAiProvider implements Provider {
       }));
       body.tool_choice = 'auto';
     }
+    if (options.maxTokens) body.max_tokens = options.maxTokens;
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.config.apiKey}`,
-        ...(this.config.headers ?? {}),
+    const response = await fetchProvider(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.config.apiKey}`,
+          ...(this.config.headers ?? {}),
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-      signal: options.signal,
-    });
-
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      throw new ProviderError(`模型请求失败（HTTP ${response.status}）${detail ? `：${detail.slice(0, 500)}` : ''}`, response.status);
-    }
+      { signal: options.signal, timeoutMs: options.timeoutMs },
+    );
 
     let text = '';
     const calls = new Map<number, ToolCallRequest>();

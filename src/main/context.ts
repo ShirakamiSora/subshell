@@ -9,8 +9,13 @@ import { RuntimeStore } from './store/runtime-store';
 import { ChatStore } from './store/chat-store';
 import { AuditStore } from './store/audit';
 import { KnownHostStore } from './store/known-hosts';
+import { HealthStateStore } from './store/health-store';
 import { SshManager } from './ssh/manager';
 import { MonitorService } from './monitor/collector';
+import { HealthService } from './health/service';
+import { SftpService } from './sftp/service';
+import { TunnelService } from './tunnel/service';
+import { McpServer } from './mcp/server';
 import { AgentService } from './ai/agent';
 import { DemoServer } from './demo/demo-server';
 import { ReconService } from './recon/service';
@@ -30,8 +35,13 @@ export class AppContext {
   readonly chat: ChatStore;
   readonly audit: AuditStore;
   readonly knownHosts: KnownHostStore;
+  readonly healthStates: HealthStateStore;
   readonly ssh: SshManager;
   readonly monitor: MonitorService;
+  readonly health: HealthService;
+  readonly sftp: SftpService;
+  readonly tunnels: TunnelService;
+  readonly mcp: McpServer;
   readonly agent: AgentService;
   readonly recon: ReconService;
   readonly demo = new DemoServer();
@@ -50,8 +60,31 @@ export class AppContext {
     this.chat = new ChatStore(this.dataDir);
     this.audit = new AuditStore(this.dataDir);
     this.knownHosts = new KnownHostStore(this.dataDir);
+    this.healthStates = new HealthStateStore(this.dataDir);
     this.ssh = new SshManager(this.servers, this.secrets, this.knownHosts);
     this.monitor = new MonitorService(this.ssh, this.runtime, this.settings, this.profiles, this.servers);
+    this.health = new HealthService({
+      profiles: this.profiles,
+      runtime: this.runtime,
+      states: this.healthStates,
+    });
+    this.sftp = new SftpService(this.ssh);
+    this.tunnels = new TunnelService(this.dataDir, this.ssh);
+    this.mcp = new McpServer({
+      servers: this.servers,
+      settings: this.settings,
+      secrets: this.secrets,
+      toolContext: (serverId) => ({
+        serverId,
+        ssh: this.ssh,
+        profiles: this.profiles,
+        runtime: this.runtime,
+        servers: this.servers,
+        audit: this.audit,
+        settings: this.settings,
+        monitor: this.monitor,
+      }),
+    });
     this.agent = new AgentService({
       ssh: this.ssh,
       servers: this.servers,
@@ -62,6 +95,7 @@ export class AppContext {
       settings: this.settings,
       providers: this.providers,
       monitor: this.monitor,
+      health: this.health,
     });
     this.recon = new ReconService({
       ssh: this.ssh,
@@ -72,6 +106,7 @@ export class AppContext {
     });
     this.ensureDefaultProvider();
     this.wireAutoFlow();
+    void this.mcp.sync().catch((error) => log.warn('MCP 服务器启动失败', error));
   }
 
   private ensureDefaultProvider(): void {
@@ -176,6 +211,8 @@ export class AppContext {
   dispose(): void {
     for (const timer of this.summaryTimers.values()) clearTimeout(timer);
     this.summaryTimers.clear();
+    this.tunnels.stopAll();
+    this.mcp.stop();
     this.monitor.dispose();
     this.ssh.closeAll();
     this.demo.stop();

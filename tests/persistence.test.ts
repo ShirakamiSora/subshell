@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -52,6 +52,43 @@ describe('数据持久化', () => {
     const messages = reopened.list('srv1');
     expect(messages).toHaveLength(2);
     expect(messages[1]?.content).toBe('一切正常');
+  });
+
+  it('旧格式数据在升级后自动迁移并写回版本号', () => {
+    const dataDir = join(tempDir(), 'data');
+    mkdirSync(dataDir, { recursive: true });
+    // 0.2 时代没有版本号，也没有 tags/jump/demo 等字段。
+    writeFileSync(
+      join(dataDir, 'servers.json'),
+      JSON.stringify([{ id: 'srv_old', host: '10.0.0.1', username: 'root', authType: 'password' }]),
+      'utf8',
+    );
+
+    const list = new ServerStore(dataDir).list();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.tags).toEqual([]);
+    expect(list[0]?.group).toBe('默认分组');
+    expect(list[0]?.demo).toBe(false);
+
+    const raw = JSON.parse(readFileSync(join(dataDir, 'servers.json'), 'utf8')) as {
+      __version: number;
+      data: unknown[];
+    };
+    expect(raw.__version).toBe(2);
+    expect(raw.data).toHaveLength(1);
+  });
+
+  it('旧版本档案缺少字段时补成当前结构', () => {
+    const dataDir = join(tempDir(), 'data');
+    const dir = join(dataDir, 'servers', 'srv1');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'profile.json'), JSON.stringify({ serverId: 'srv1', hostname: 'legacy' }), 'utf8');
+
+    const profile = new ProfileStore(dataDir).get('srv1');
+    expect(profile?.hostname).toBe('legacy');
+    expect(profile?.services).toEqual([]);
+    expect(profile?.notes).toBe('');
+    expect(profile?.schemaVersion).toBe(2);
   });
 
   it('保存服务器档案后，新实例能读取', () => {

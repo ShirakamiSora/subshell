@@ -1,0 +1,9 @@
+# 统一行尾为 LF（Prettier 配置了 endOfLine: lf），二进制资源不做转换
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff2 binary

@@ -26,6 +26,10 @@ export interface ChatOptions {
   signal: AbortSignal;
   onDelta?: (text: string) => void;
   temperature?: number;
+  /** 单次模型调用的超时（毫秒）。默认 180 秒。 */
+  timeoutMs?: number;
+  /** 单次调用的最大输出 token。 */
+  maxTokens?: number;
 }
 
 export interface ChatResult {

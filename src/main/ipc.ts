@@ -2,10 +2,11 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { writeFileSync } from 'node:fs';
 import type { AppContext } from './context';
 import type { ServerInput, TestResult } from '../shared/api';
-import type { ApprovalDecision, ProviderConfig, ProviderInput, ServerConfig } from '../shared/types';
+import type { ApprovalDecision, IssueStatus, ProviderConfig, ProviderInput, ServerConfig } from '../shared/types';
 import { testConnection } from './ssh/tester';
 import { createProvider } from './ai/providers';
 import { profileToMarkdown } from './recon/service';
+import { checkForUpdates, openDownloadPage, type UpdateInfo } from './update/service';
 import { createLogger } from './util/logger';
 
 const log = createLogger('ipc');
@@ -51,6 +52,8 @@ export function registerIpc(context: AppContext): void {
   ipcMain.handle('settings:get', () => context.settings.get());
   ipcMain.handle('settings:save', (_event, patch) => {
     const settings = context.settings.save(patch);
+    // MCP 的启停与端口都来自设置，保存后立即同步运行状态。
+    void context.mcp.sync().catch((error) => log.warn('MCP 重新加载失败', error));
     // 主题切换时同步窗口按钮区域配色，避免明亮主题下右上角残留深色块。
     const window = BrowserWindow.getAllWindows()[0];
     if (window) {
@@ -85,6 +88,8 @@ export function registerIpc(context: AppContext): void {
     context.servers.remove(id);
     context.secrets.delete(id);
     context.profiles.remove(id);
+    context.health.remove(id);
+    context.tunnels.removeServer(id);
     context.chat.clear(id);
   });
   ipcMain.handle('servers:test', async (_event, input: ServerInput): Promise<TestResult> => {
@@ -112,6 +117,25 @@ export function registerIpc(context: AppContext): void {
     context.ssh.resizeTerminal(sessionId, cols, rows),
   );
   ipcMain.handle('terminal:close', (_event, sessionId: string) => context.ssh.closeTerminal(sessionId));
+
+  ipcMain.handle('sftp:home', (_event, serverId: string) => context.sftp.home(serverId));
+  ipcMain.handle('sftp:list', (_event, serverId: string, path: string) => context.sftp.list(serverId, path));
+  ipcMain.handle('sftp:preview', (_event, serverId: string, path: string) => context.sftp.preview(serverId, path));
+  ipcMain.handle('sftp:download', (_event, serverId: string, path: string) => context.sftp.download(serverId, path));
+  ipcMain.handle('sftp:upload', (_event, serverId: string, dir: string) => context.sftp.upload(serverId, dir));
+  ipcMain.handle('sftp:mkdir', (_event, serverId: string, path: string) => context.sftp.mkdir(serverId, path));
+  ipcMain.handle('sftp:rename', (_event, serverId: string, from: string, to: string) =>
+    context.sftp.rename(serverId, from, to),
+  );
+  ipcMain.handle('sftp:remove', (_event, serverId: string, path: string, isDir: boolean) =>
+    context.sftp.remove(serverId, path, isDir),
+  );
+
+  ipcMain.handle('tunnel:list', (_event, serverId: string) => context.tunnels.list(serverId));
+  ipcMain.handle('tunnel:save', (_event, serverId: string, input) => context.tunnels.save(serverId, input));
+  ipcMain.handle('tunnel:start', (_event, id: string) => context.tunnels.start(id));
+  ipcMain.handle('tunnel:stop', (_event, id: string) => context.tunnels.stop(id));
+  ipcMain.handle('tunnel:remove', (_event, serverId: string, id: string) => context.tunnels.remove(serverId, id));
 
   ipcMain.handle('exec', (_event, serverId: string, command: string, options) =>
     context.ssh.exec(serverId, command, options),
@@ -220,7 +244,9 @@ export function registerIpc(context: AppContext): void {
       clearTimeout(timer);
     }
   });
-  ipcMain.handle('ai:send', (_event, serverId: string, text: string) => context.agent.send(serverId, text));
+  ipcMain.handle('ai:send', (_event, serverId: string, text: string, issueId?: string) =>
+    context.agent.send(serverId, text, issueId),
+  );
   ipcMain.handle('ai:cancel', (_event, serverId: string) => context.agent.cancel(serverId));
   ipcMain.handle('ai:decide', (_event, serverId: string, decision: ApprovalDecision) =>
     context.agent.decide(serverId, decision),
@@ -235,6 +261,17 @@ export function registerIpc(context: AppContext): void {
   ipcMain.handle('audit:list', (_event, serverId?: string, limit?: number) =>
     context.audit.list(serverId, limit ?? 200),
   );
+
+  ipcMain.handle('health:report', (_event, serverId: string) => context.health.report(serverId));
+  ipcMain.handle('health:resolve', (_event, serverId: string, issueId: string, status: IssueStatus) =>
+    context.health.setStatus(serverId, issueId, status),
+  );
+  ipcMain.handle('health:tickets', (_event, serverId: string) => context.health.tickets(serverId));
+
+  ipcMain.handle('mcp:info', () => context.mcp.info());
+
+  ipcMain.handle('update:check', (): Promise<UpdateInfo> => checkForUpdates());
+  ipcMain.handle('update:open', (_event, url: string) => openDownloadPage(url));
 
   ipcMain.handle('usage:summary', () => {
     const servers = context.servers.list();

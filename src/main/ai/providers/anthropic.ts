@@ -1,5 +1,6 @@
 import type { ChatOptions, ChatResult, Provider, ProviderMessage, ToolCallRequest } from './types';
-import { ProviderError, sseData } from './types';
+import { sseData } from './types';
+import { fetchProvider } from './request';
 
 type AnthropicBlock =
   | { type: 'text'; text: string }
@@ -36,7 +37,7 @@ export class AnthropicProvider implements Provider {
         const blocks: AnthropicBlock[] = [];
         if (message.content) blocks.push({ type: 'text', text: message.content });
         for (const call of message.toolCalls ?? []) {
-          let input: unknown = {};
+          let input: unknown;
           try {
             input = JSON.parse(call.arguments || '{}');
           } catch {
@@ -69,7 +70,7 @@ export class AnthropicProvider implements Provider {
     const url = `${this.config.baseUrl.replace(/\/+$/, '')}/v1/messages`;
     const body: Record<string, unknown> = {
       model: this.config.model,
-      max_tokens: 4096,
+      max_tokens: options.maxTokens ?? 4096,
       messages,
       temperature: options.temperature ?? 0.2,
       stream: true,
@@ -83,25 +84,20 @@ export class AnthropicProvider implements Provider {
       }));
     }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.config.apiKey,
-        'anthropic-version': '2023-06-01',
-        ...(this.config.headers ?? {}),
+    const response = await fetchProvider(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.config.apiKey,
+          'anthropic-version': '2023-06-01',
+          ...(this.config.headers ?? {}),
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-      signal: options.signal,
-    });
-
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      throw new ProviderError(
-        `模型请求失败（HTTP ${response.status}）${detail ? `：${detail.slice(0, 500)}` : ''}`,
-        response.status,
-      );
-    }
+      { signal: options.signal, timeoutMs: options.timeoutMs },
+    );
 
     let text = '';
     const blocks = new Map<number, { id: string; name: string; json: string }>();

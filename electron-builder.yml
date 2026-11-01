@@ -18,6 +18,13 @@ files:
 asar: true
 npmRebuild: false
 
+# 发布到 GitHub Releases。更新检查（设置 → 检查更新）读取同一个仓库。
+# 换成自己的仓库时，同时修改 src/main/update/service.ts 的默认 REPO。
+publish:
+  provider: github
+  owner: ShirakamiSora
+  repo: subshell
+
 win:
   icon: build/icon.ico
   target:
@@ -28,6 +35,9 @@ win:
       arch:
         - x64
   artifactName: Subshell-${version}-portable.${ext}
+  # 代码签名：CI 里配置 CSC_LINK（.pfx 路径或 base64）与 CSC_KEY_PASSWORD 后自动生效。
+  # 未配置时产物是未签名包，Windows SmartScreen 会提示「未知发布者」。
+  signAndEditExecutable: true
 
 portable:
   artifactName: Subshell-${version}-portable.exe
@@ -41,3 +51,32 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: Subshell
   artifactName: Subshell-Setup-${version}.${ext}
+
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  artifactName: Subshell-${version}-${arch}.${ext}
+  # 公证：配置 APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID 后改为 true，
+  # 否则 macOS 首次打开会提示「无法验证开发者」。
+  notarize: false
+
+dmg:
+  artifactName: Subshell-${version}-${arch}.dmg
+
+linux:
+  icon: build/icon.png
+  category: Development
+  target:
+    - AppImage
+    - deb
+  maintainer: subshell
+  artifactName: Subshell-${version}-${arch}.${ext}

@@ -51,7 +51,14 @@ export class RuntimeStore {
     const file = this.file(serverId);
     if (existsSync(file)) {
       try {
-        data = { ...empty(), ...(JSON.parse(readFileSync(file, 'utf8')) as Partial<RuntimeData>) };
+        const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<RuntimeData>;
+        data = { ...empty(), ...parsed };
+        // 旧版本文件可能缺字段或类型不一致，统一规范成数组，避免渲染层崩溃。
+        data.samples = Array.isArray(data.samples) ? data.samples : [];
+        data.events = Array.isArray(data.events) ? data.events : [];
+        data.services = Array.isArray(data.services) ? data.services : [];
+        data.ports = Array.isArray(data.ports) ? data.ports : [];
+        data.processes = Array.isArray(data.processes) ? data.processes : [];
         data.monitoring = false;
       } catch {
         // 损坏时从空数据开始
