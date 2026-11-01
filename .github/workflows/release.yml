@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+  # 允许在 Actions 页面手动重跑，便于补发某个平台
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -42,17 +44,35 @@ jobs:
       - name: Build renderer and main
         run: npm run build
 
-      # 未配置签名 secrets 时 electron-builder 会产出未签名包（仍然可用，
-      # 但 Windows 会提示「未知发布者」、macOS 需要右键打开）。配置方法见 docs/RELEASING.md。
+      # 关键：只有 secret 存在时才导出对应的环境变量。
+      # 直接把空 secret 写进 env 会让 electron-builder 把 CSC_LINK="" 当成路径，
+      # 在 macOS 上报 “not a file”，整个打包失败。
+      - name: Configure signing (optional)
+        shell: bash
+        env:
+          CSC_LINK_SECRET: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD_SECRET: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID_SECRET: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD_SECRET: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID_SECRET: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$CSC_LINK_SECRET" ]; then
+            echo "CSC_LINK=$CSC_LINK_SECRET" >> "$GITHUB_ENV"
+            echo "CSC_KEY_PASSWORD=$CSC_KEY_PASSWORD_SECRET" >> "$GITHUB_ENV"
+            echo "::notice::Code signing certificate configured"
+          else
+            echo "::notice::No code signing certificate — building unsigned artifacts"
+          fi
+          if [ -n "$APPLE_ID_SECRET" ]; then
+            echo "APPLE_ID=$APPLE_ID_SECRET" >> "$GITHUB_ENV"
+            echo "APPLE_APP_SPECIFIC_PASSWORD=$APPLE_APP_PASSWORD_SECRET" >> "$GITHUB_ENV"
+            echo "APPLE_TEAM_ID=$APPLE_TEAM_ID_SECRET" >> "$GITHUB_ENV"
+          fi
+
       - name: Package
         run: npx electron-builder --${{ matrix.target }} --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -64,4 +84,5 @@ jobs:
             release/*.dmg
             release/*.AppImage
             release/*.deb
+            release/*.yml
           if-no-files-found: ignore
