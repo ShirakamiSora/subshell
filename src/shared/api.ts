@@ -5,14 +5,28 @@ import type {
   AppInfo,
   AppSettings,
   ApprovalDecision,
+  ApprovalRecord,
+  ApprovalRule,
+  ApprovalRuleInput,
+  ApprovalVerdict,
   AuditEntry,
   ChatMessage,
+  ClusterPrecheckResult,
+  ClusterRun,
+  ClusterRunInput,
+  CommandHistoryEntry,
+  CommandHistoryQuery,
   ConnectionInfo,
   DemoStatus,
   ExecOptions,
   ExecResult,
   HealthReport,
   IssueStatus,
+  McpCallRecord,
+  McpClient,
+  McpClientInput,
+  McpClientsResult,
+  McpStatus,
   MetricSample,
   MonitorEvent,
   PortInfo,
@@ -21,6 +35,10 @@ import type {
   ProviderInput,
   RealtimePayload,
   RemoteEntry,
+  SecurityFindingStatus,
+  SecurityRemediation,
+  SecurityRemediationResult,
+  SecurityReport,
   ServerConfig,
   ServerProfile,
   ServerRuntime,
@@ -69,6 +87,9 @@ export interface EventMap {
   'health:update': HealthReport;
   'servers:update': ServerConfig[];
   'app:notice': { level: 'info' | 'warning' | 'error'; message: string };
+  'command:update': { serverId: string; entry: CommandHistoryEntry };
+  'security:update': SecurityReport;
+  'cluster:update': ClusterRun;
 }
 
 export type EventChannel = keyof EventMap;
@@ -139,7 +160,44 @@ export interface SubshellApi {
     tickets(serverId: string): Promise<TicketRecord[]>;
   };
   mcp: {
-    info(): Promise<{ running: boolean; port: number; token: string; mutationEnabled: boolean; endpoint: string }>;
+    info(): Promise<McpStatus>;
+    clients(): Promise<McpClient[]>;
+    saveClient(input: McpClientInput): Promise<McpClientsResult>;
+    toggleClient(id: string, enabled: boolean): Promise<McpClient[]>;
+    rotateClient(id: string): Promise<McpClientsResult>;
+    removeClient(id: string): Promise<McpClient[]>;
+    calls(limit?: number): Promise<McpCallRecord[]>;
+  };
+  commands: {
+    list(serverId: string, query?: CommandHistoryQuery): Promise<CommandHistoryEntry[]>;
+    get(serverId: string, id: string): Promise<CommandHistoryEntry | null>;
+    analyze(serverId: string, id: string): Promise<CommandHistoryEntry>;
+    planRollback(serverId: string, id: string, note?: string): Promise<CommandHistoryEntry>;
+    applyRollback(serverId: string, id: string, approved: boolean): Promise<CommandHistoryEntry>;
+    remove(serverId: string, id: string): Promise<void>;
+    clear(serverId: string): Promise<void>;
+  };
+  approval: {
+    rules(): Promise<ApprovalRule[]>;
+    saveRule(input: ApprovalRuleInput): Promise<ApprovalRule[]>;
+    toggleRule(id: string, enabled: boolean): Promise<ApprovalRule[]>;
+    deleteRule(id: string): Promise<ApprovalRule[]>;
+    resetRules(): Promise<ApprovalRule[]>;
+    records(serverId?: string, limit?: number): Promise<ApprovalRecord[]>;
+    test(serverId: string, command: string): Promise<ApprovalVerdict>;
+  };
+  security: {
+    report(serverId: string): Promise<SecurityReport>;
+    scan(serverId: string): Promise<SecurityReport>;
+    resolve(serverId: string, findingId: string, status: SecurityFindingStatus): Promise<SecurityReport>;
+    remediate(serverId: string, findingId: string): Promise<SecurityRemediation>;
+    apply(serverId: string, findingId: string, approved: boolean): Promise<SecurityRemediationResult>;
+  };
+  cluster: {
+    precheck(serverIds: string[], command?: string): Promise<ClusterPrecheckResult[]>;
+    run(input: ClusterRunInput): Promise<ClusterRun>;
+    cancel(runId: string): Promise<void>;
+    history(limit?: number): Promise<ClusterRun[]>;
   };
   update: {
     check(): Promise<{

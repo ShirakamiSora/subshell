@@ -31,7 +31,7 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
         if (!cancelled) setSummary(data);
       })
       .catch(() => {
-        if (!cancelled) setSummary({ total: { input: 0, output: 0 }, servers: [] });
+        if (!cancelled) setSummary({ total: { input: 0, output: 0, cachedInput: 0, cacheCreation: 0 }, servers: [] });
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -47,6 +47,10 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
     (input / 1_000_000) * inPrice + (output / 1_000_000) * outPrice;
   const totalCost = summary ? costOf(summary.total.input, summary.total.output) : 0;
   const hasPrice = inPrice > 0 || outPrice > 0;
+  const cacheHitRate =
+    summary && summary.total.input > 0
+      ? (summary.total.cachedInput / summary.total.input) * 100
+      : null;
 
   const savePrices = async () => {
     await saveSettings({ inputPricePerMTok: inPrice, outputPricePerMTok: outPrice });
@@ -67,13 +71,25 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
       }
     >
       <div className="space-y-4">
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-4 gap-3">
           <Stat label={t('usage.inputTokens')} value={summary ? formatTokens(summary.total.input) : '—'} />
           <Stat label={t('usage.outputTokens')} value={summary ? formatTokens(summary.total.output) : '—'} />
+          <Stat
+            label={t('usage.cacheHitRate')}
+            value={cacheHitRate === null ? '—' : `${cacheHitRate.toFixed(1)}%`}
+            hint={t('usage.cacheHint')}
+          />
           <Stat
             label={t('usage.estimated')}
             value={hasPrice && summary ? `¥${totalCost.toFixed(2)}` : '—'}
           />
+        </div>
+
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--panel-2)] px-3 py-2 text-[11.5px] text-[var(--muted-2)]">
+          {t('usage.cacheDetail', {
+            cached: summary ? formatTokens(summary.total.cachedInput) : '0',
+            creation: summary ? formatTokens(summary.total.cacheCreation) : '0',
+          })}
         </div>
 
         <div className="rounded-lg border border-[var(--border)] bg-[var(--panel-2)] p-3">
@@ -116,6 +132,7 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
                 <tr>
                   <th className="px-3 py-1.5 text-left font-medium">{t('audit.server')}</th>
                   <th className="px-3 py-1.5 text-right font-medium">{t('usage.input')}</th>
+                  <th className="px-3 py-1.5 text-right font-medium">{t('usage.cached')}</th>
                   <th className="px-3 py-1.5 text-right font-medium">{t('usage.output')}</th>
                   <th className="px-3 py-1.5 text-right font-medium">{t('usage.messages')}</th>
                   <th className="px-3 py-1.5 text-right font-medium">{t('usage.estimate')}</th>
@@ -124,14 +141,14 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
               <tbody>
                 {loading && (
                   <tr>
-                    <td colSpan={5} className="px-3 py-6 text-center text-[var(--muted-2)]">
+                    <td colSpan={6} className="px-3 py-6 text-center text-[var(--muted-2)]">
                       <Loader2 size={13} className="spin inline" />
                     </td>
                   </tr>
                 )}
                 {!loading && summary?.servers.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-3 py-6 text-center text-[var(--muted-2)]">
+                    <td colSpan={6} className="px-3 py-6 text-center text-[var(--muted-2)]">
                       {t('usage.empty')}
                     </td>
                   </tr>
@@ -140,6 +157,13 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
                   <tr key={row.serverId} className="border-t border-[var(--border)]/70">
                     <td className="max-w-[180px] truncate px-3 py-1.5 text-[var(--text)]">{row.name}</td>
                     <td className="px-3 py-1.5 text-right">{formatTokens(row.input)}</td>
+                    <td className="px-3 py-1.5 text-right">
+                      {row.cachedInput > 0 ? (
+                        <span className="text-[var(--success)]">{formatTokens(row.cachedInput)}</span>
+                      ) : (
+                        <span className="text-[var(--muted-2)]">—</span>
+                      )}
+                    </td>
                     <td className="px-3 py-1.5 text-right">{formatTokens(row.output)}</td>
                     <td className="px-3 py-1.5 text-right text-[var(--muted-2)]">{row.messages}</td>
                     <td className="px-3 py-1.5 text-right">
@@ -156,11 +180,12 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--panel-2)] px-3 py-2.5">
       <div className="text-[11px] text-[var(--muted-2)]">{label}</div>
       <div className="mt-0.5 text-[19px] font-semibold text-[var(--text)]">{value}</div>
+      {hint && <div className="mt-0.5 text-[10px] leading-tight text-[var(--muted-2)]">{hint}</div>}
     </div>
   );
 }

@@ -34,6 +34,13 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     autoCheckUpdate: false,
     inputPricePerMTok: 0,
     outputPricePerMTok: 0,
+    smartApprovalEnabled: false,
+    smartApprovalUseModel: true,
+    commandHistoryEnabled: true,
+    commandHistoryRetention: 2000,
+    securityAutoScan: false,
+    securityScanIntervalHours: 24,
+    clusterParallelism: 4,
     ...overrides,
   };
 }

@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MetricSample, MonitorEvent, PortInfo, ProcessInfo, ServiceInfo } from '../../shared/types';
+import type { SubshellDb } from './db';
 
 export interface RuntimeData {
   samples: MetricSample[];
@@ -24,8 +25,8 @@ const empty = (): RuntimeData => ({
 });
 
 /**
- * 监控运行时数据。样本高频更新，因此内存为主、磁盘按节流写入，
- * 避免每 15 秒重写整个文件。
+ * 监控运行时数据。样本高频更新，因此内存为主、SQLite 按节流写入，
+ * 避免每 15 秒序列化整份对话或档案。
  */
 export class RuntimeStore {
   private cache = new Map<string, RuntimeData>();
@@ -33,25 +34,21 @@ export class RuntimeStore {
   private timer: NodeJS.Timeout | null = null;
 
   constructor(
-    private readonly dataDir: string,
+    private readonly db: SubshellDb,
     private readonly limits = { samples: 720, events: 300 },
   ) {
     this.timer = setInterval(() => this.flush(), 30_000);
     this.timer.unref?.();
   }
 
-  private file(serverId: string): string {
-    return join(this.dataDir, 'servers', serverId, 'runtime.json');
-  }
-
   get(serverId: string): RuntimeData {
     const cached = this.cache.get(serverId);
     if (cached) return cached;
     let data = empty();
-    const file = this.file(serverId);
-    if (existsSync(file)) {
+    const raw = this.db.doc(`runtime:${serverId}`) ?? this.legacy(serverId);
+    if (raw) {
       try {
-        const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<RuntimeData>;
+        const parsed = JSON.parse(raw) as Partial<RuntimeData>;
         data = { ...empty(), ...parsed };
         // 旧版本文件可能缺字段或类型不一致，统一规范成数组，避免渲染层崩溃。
         data.samples = Array.isArray(data.samples) ? data.samples : [];
@@ -66,6 +63,16 @@ export class RuntimeStore {
     }
     this.cache.set(serverId, data);
     return data;
+  }
+
+  private legacy(serverId: string): string | null {
+    const file = join(this.db.dataDir, 'servers', serverId, 'runtime.json');
+    if (!existsSync(file)) return null;
+    try {
+      return readFileSync(file, 'utf8');
+    } catch {
+      return null;
+    }
   }
 
   /** 追加样本并裁剪到保留上限。 */
@@ -136,9 +143,7 @@ export class RuntimeStore {
       const data = this.cache.get(serverId);
       if (!data) continue;
       try {
-        const file = this.file(serverId);
-        mkdirSync(join(file, '..'), { recursive: true });
-        writeFileSync(file, JSON.stringify(data), 'utf8');
+        this.db.setDoc(`runtime:${serverId}`, JSON.stringify(data));
       } catch {
         // 保留 dirty，下次重试
         continue;

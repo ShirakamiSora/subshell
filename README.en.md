@@ -10,9 +10,17 @@ Subshell combines an **interactive SSH terminal**, **automatic server discovery*
 | --- | --- |
 | ![Overview](docs/screenshots/overview.png) | ![Health](docs/screenshots/health.png) |
 
+| Command history | Server security |
+| --- | --- |
+| ![Command history](docs/screenshots/history.png) | ![Server security](docs/screenshots/security.png) |
+
 | Files | AI Assistant |
 | --- | --- |
 | ![Files](docs/screenshots/files.png) | ![Assistant](docs/screenshots/assistant.png) |
+
+| Cluster ops | Settings |
+| --- | --- |
+| ![Cluster ops](docs/screenshots/cluster.png) | ![Settings](docs/screenshots/settings.png) |
 
 ## Highlights
 
@@ -25,7 +33,13 @@ Subshell combines an **interactive SSH terminal**, **automatic server discovery*
 - **Interactive terminal** — xterm.js with resize, copy/paste and reconnect. Press `Tab` for command completion; use **Command analysis** to understand a command before running it.
 - **File manager** — built-in SFTP browser with directory listing, text preview, upload, download, create, rename and delete.
 - **Port forwarding** — map a remote service onto local `127.0.0.1` (for example a remote MySQL from your local client). Loopback only.
-- **MCP server** — expose your servers as MCP tools for Claude Code, Cursor and similar agents. Read-only by default, token-protected, loopback only.
+- **MCP server** — expose your servers as MCP tools for Claude Code, Cursor and similar agents. Read-only by default, token-protected, loopback only. Each client gets its own scopes and server allowlist.
+- **Command history & smart rollback** — commands from the terminal, AI, cluster and manual runs are recorded. Ask the model what a command did, then have it generate a rollback plan with predicted outcomes; nothing runs until you confirm.
+- **Smart approval** — a maintainable command library maps commands to risk decisions; unmatched commands go to the model in a separate session with the server profile. High-risk actions and critical services always ask you.
+- **Server security** — periodic checks for exposed ports, SSH, firewall, accounts, updates, Docker, time sync and certificates, with fix plans that call out conflicts with existing services.
+- **Cluster operations** — pick multiple servers, precheck their environment, then run the same goal in parallel with per-server results.
+- **Local SQLite storage** — settings, profiles, conversations, command history, approvals and security reports live in `subshell.db`; legacy JSON data is migrated automatically. Credentials stay in the encrypted system vault.
+- **Model cache hit rate** — the stable system prompt is separated from live context, compatible with prefix caching on OpenAI / DeepSeek / Anthropic; official cache usage fields are parsed and shown in the usage dialog and the assistant header.
 - **Token usage & estimated cost** — per-conversation token counts with a cost estimate based on prices you enter manually.
 - **Bilingual UI** — Simplified Chinese and English.
 

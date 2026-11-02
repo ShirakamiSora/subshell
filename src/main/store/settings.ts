@@ -1,5 +1,7 @@
+import { join } from 'node:path';
 import type { AppSettings } from '../../shared/types';
-import { JsonStore } from './json-store';
+import type { SubshellDb } from './db';
+import { SqliteStore } from './sqlite-store';
 
 export const defaultSettings: AppSettings = {
   activeProviderId: null,
@@ -20,17 +22,25 @@ export const defaultSettings: AppSettings = {
   autoCheckUpdate: true,
   inputPricePerMTok: 0,
   outputPricePerMTok: 0,
+  smartApprovalEnabled: false,
+  smartApprovalUseModel: true,
+  commandHistoryEnabled: true,
+  commandHistoryRetention: 2000,
+  securityAutoScan: true,
+  securityScanIntervalHours: 24,
+  clusterParallelism: 4,
 };
 
-/** settings.json 的结构版本。新增字段时递增，旧文件会自动补齐默认值。 */
-const SCHEMA_VERSION = 4;
+/** settings 的结构版本。新增字段时递增，旧数据会自动补齐默认值。 */
+const SCHEMA_VERSION = 5;
 
 export class SettingsStore {
-  private readonly store: JsonStore<AppSettings>;
+  private readonly store: SqliteStore<AppSettings>;
 
-  constructor(dataDir: string) {
-    this.store = new JsonStore<AppSettings>(`${dataDir}/settings.json`, () => ({ ...defaultSettings }), {
+  constructor(db: SubshellDb) {
+    this.store = new SqliteStore<AppSettings>(db, 'settings', () => ({ ...defaultSettings }), {
       version: SCHEMA_VERSION,
+      legacyFile: join(db.dataDir, 'settings.json'),
       migrate: (data) => ({
         ...defaultSettings,
         ...(typeof data === 'object' && data !== null ? (data as Partial<AppSettings>) : {}),

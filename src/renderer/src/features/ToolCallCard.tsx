@@ -14,6 +14,7 @@ import {
   ScrollText,
   Server,
   ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Square,
   Terminal,
@@ -108,6 +109,24 @@ export function ToolCallCard({ serverId, call }: { serverId: string; call: Agent
         </pre>
       )}
 
+      {call.approval && (
+        <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-[var(--border)] bg-[var(--panel-2)] px-2 py-1.5">
+          <ShieldCheck size={11} className="mt-0.5 flex-none text-[var(--accent)]" />
+          <div className="min-w-0 text-[11px]">
+            <div className="text-[var(--muted-2)]">
+              {t('tool.approvalSource')}：{t(`approval.source.${call.approval.source}`)}
+              {call.approval.ruleName ? ` · ${call.approval.ruleName}` : ''}
+              {call.approval.auto && (
+                <span className="ml-1.5 rounded bg-emerald-400/10 px-1 py-px text-[10px] text-[var(--success)]">
+                  {t('tool.autoApproved')}
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 break-words leading-relaxed text-[var(--muted)]">{call.approval.reason}</p>
+          </div>
+        </div>
+      )}
+
       {waiting && (
         <div className="mt-2">
           <div className="text-[12px] leading-relaxed text-[var(--warning)]">
@@ -147,6 +166,9 @@ export function ToolCallCard({ serverId, call }: { serverId: string; call: Agent
         <div className="mt-1.5 text-[12px] text-[var(--muted-2)]">
           {call.error ?? t('tool.rejectedByUser')}
         </div>
+      )}
+      {call.status === 'rejected' && call.approval && (
+        <div className="mt-1 text-[11px] leading-relaxed text-[var(--muted-2)]">{call.approval.reason}</div>
       )}
       {call.status === 'error' && call.error && !expanded && (
         <div className="mt-1.5 whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--danger)]">{call.error}</div>

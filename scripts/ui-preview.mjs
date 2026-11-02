@@ -205,6 +205,165 @@ function mockScript() {
     mcpAllowMutations: false,
     inputPricePerMTok: 2,
     outputPricePerMTok: 8,
+    smartApprovalEnabled: true,
+    smartApprovalUseModel: true,
+    commandHistoryEnabled: true,
+    commandHistoryRetention: 2000,
+    securityAutoScan: true,
+    securityScanIntervalHours: 24,
+    clusterParallelism: 4,
+  };
+
+  const commands = [
+    {
+      id: 'h1',
+      serverId: 'srv1',
+      command: 'systemctl restart nginx',
+      source: 'ai',
+      risk: 'medium',
+      ok: true,
+      exitCode: 0,
+      durationMs: 1240,
+      ts: now - 300_000,
+      purpose: '重启网站服务',
+      analysis: {
+        summary: '重启 Nginx 主进程并重新加载配置。短暂中断 1-3 秒，随后恢复监听 80/443。',
+        impact: '网站会出现短暂 502；已建立的连接被重置。',
+        riskNotes: ['配置文件语法错误会导致启动失败', '重启期间上游连接可能被拒绝'],
+        reversible: true,
+        generatedAt: now - 240_000,
+        model: 'DeepSeek · deepseek-chat',
+      },
+      rollback: {
+        entryId: 'h1',
+        summary: '如果重启导致配置异常，先回滚到上一份配置再重载；不要重复重启。',
+        steps: [
+          { command: 'nginx -t', purpose: '校验当前配置语法', risk: 'read' },
+          { command: 'cp /etc/nginx/sites-enabled/app.conf.bak /etc/nginx/sites-enabled/app.conf', purpose: '恢复上一份站点配置', risk: 'medium' },
+          { command: 'systemctl reload nginx', purpose: '平滑重载配置', risk: 'low' },
+        ],
+        predictions: ['站点在 2 秒内恢复；已连接的客户端会自动重连。', '如果备份文件不存在，第二步会失败，需要人工确认备份路径。'],
+        conflicts: ['与 443 端口上的证书续期任务无关；reload 不会中断现有 TLS 连接。'],
+        confidence: 'high',
+        generatedAt: now - 200_000,
+        status: 'planned',
+      },
+    },
+    {
+      id: 'h2',
+      serverId: 'srv1',
+      command: 'rm -rf /var/log/nginx/old.log',
+      source: 'terminal',
+      risk: 'high',
+      ok: true,
+      exitCode: 0,
+      durationMs: 86,
+      ts: now - 2_400_000,
+      purpose: '清理旧日志',
+      reverted: true,
+      rollback: {
+        entryId: 'h2',
+        summary: '从备份目录恢复被删除的日志文件。',
+        steps: [{ command: 'cp /var/backups/nginx/old.log /var/log/nginx/old.log', purpose: '从备份恢复日志', risk: 'low' }],
+        predictions: ['恢复后日志会重新占用约 40 MB。'],
+        conflicts: ['如果备份任务正在写入该文件，可能产生冲突。'],
+        confidence: 'medium',
+        generatedAt: now - 2_300_000,
+        status: 'executed',
+        results: [{ command: 'cp /var/backups/nginx/old.log /var/log/nginx/old.log', ok: true, exitCode: 0, output: '（无输出）' }],
+      },
+    },
+    {
+      id: 'h3',
+      serverId: 'srv1',
+      command: 'apt-get install -y fail2ban',
+      source: 'cluster',
+      risk: 'medium',
+      ok: false,
+      exitCode: 100,
+      durationMs: 12_400,
+      ts: now - 86_400_000,
+      purpose: '集群统一安装 fail2ban',
+      stderr: 'E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 812 (unattended-upgr)',
+    },
+    {
+      id: 'h4',
+      serverId: 'srv1',
+      command: 'journalctl -u fail2ban -n 60 --no-pager',
+      source: 'ai',
+      risk: 'read',
+      ok: true,
+      exitCode: 0,
+      durationMs: 320,
+      ts: now - 90_000,
+      purpose: '查看 fail2ban 失败原因',
+      stdout: '-- Journal begins at ... --\nfail2ban[2211]: ERROR Failed to access socket path: /var/run/fail2ban/fail2ban.sock',
+    },
+  ];
+
+  const securityReport = {
+    serverId: 'srv1',
+    scan: {
+      serverId: 'srv1',
+      startedAt: now - 1_800_000,
+      finishedAt: now - 1_799_000,
+      trigger: 'scheduled',
+      score: 64,
+      summary: '发现 1 个严重问题、3 个警告、1 个提示。',
+      findings: [
+        { id: 'port:6379', kind: 'port', severity: 'critical', title: 'Redis 端口对外开放', detail: '未授权的 Redis 可被写入 SSH 公钥或窃取数据。当前监听 0.0.0.0:6379（tcp，进程 redis-server）。', evidence: 'tcp 0.0.0.0:6379 redis-server', suggestion: '把 Redis 改为只监听 127.0.0.1，或在防火墙/安全组中仅放行可信来源 IP。', status: 'open', updatedAt: now - 1_800_000 },
+        { id: 'ssh:root-login', kind: 'ssh', severity: 'warning', title: 'SSH 允许 root 直接登录', detail: 'root 直接登录会放大暴力破解与误操作风险，建议改为 prohibit-password 并使用普通用户 + sudo。', evidence: 'PermitRootLogin yes', suggestion: '修改 /etc/ssh/sshd_config：PermitRootLogin prohibit-password，然后 sshd -t && systemctl reload sshd。', status: 'open', updatedAt: now - 1_800_000 },
+        { id: 'ssh:password-auth', kind: 'ssh', severity: 'warning', title: 'SSH 允许密码登录', detail: '密码登录可被暴力破解。确认已配置密钥登录后，可以关闭密码认证。', evidence: 'PasswordAuthentication yes', suggestion: '确认密钥登录可用后，将 PasswordAuthentication 改为 no 并重载 sshd。', status: 'open', updatedAt: now - 1_800_000 },
+        { id: 'firewall:inactive', kind: 'firewall', severity: 'warning', title: '主机防火墙未启用', detail: '未检测到生效的 ufw / firewalld / iptables 规则。若云安全组已收敛端口，可忽略此项。', evidence: 'Status: inactive', suggestion: '启用 ufw 或 firewalld，并保留 SSH 端口。', status: 'open', updatedAt: now - 1_800_000 },
+        { id: 'ssh:public-port', kind: 'ssh', severity: 'info', title: 'SSH 端口对公网开放', detail: 'SSH 是暴力破解的主要目标。建议限制来源 IP，或改用非默认端口并启用 fail2ban。', status: 'open', updatedAt: now - 1_800_000 },
+      ],
+    },
+    remediations: [
+      {
+        findingId: 'port:6379',
+        serverId: 'srv1',
+        summary: '把 Redis 收敛到回环地址，并确认应用仍能通过本机连接。',
+        steps: [
+          { title: '备份当前 Redis 配置', commands: ['cp /etc/redis/redis.conf /etc/redis/redis.conf.bak'], risk: 'medium', note: '先备份，回滚时直接覆盖。' },
+          { title: '限制监听地址', commands: ["sed -i 's/^bind .*/bind 127.0.0.1 ::1/' /etc/redis/redis.conf"], risk: 'medium', note: '如果应用从其他机器连接 Redis，需要改为放行内网网段。' },
+          { title: '重启 Redis 并验证', commands: ['systemctl restart redis-server', 'ss -tlnp | grep 6379'], risk: 'low' },
+        ],
+        impact: '外部客户端将无法直连 6379；本机应用不受影响。',
+        conflicts: [
+          { target: 'web-app 容器', reason: '容器通过 172.17.0.1:6379 连接 Redis，改为 127.0.0.1 后需要调整 docker network。', severity: 'warning' },
+          { target: '云安全组', reason: '如果安全组仍放行 6379，建议同步收敛。', severity: 'info' },
+        ],
+        verification: ['ss -tlnp 只看到 127.0.0.1:6379', '应用日志中没有 Redis 连接错误', 'redis-cli ping 返回 PONG'],
+        generatedAt: now - 1_700_000,
+        status: 'draft',
+      },
+    ],
+  };
+
+  const clusterRun = {
+    id: 'cluster_demo',
+    command: 'systemctl restart nginx',
+    purpose: '统一重启 Web 服务',
+    startedAt: now - 600_000,
+    finishedAt: now - 598_000,
+    phase: 'done',
+    targets: [
+      {
+        serverId: 'srv1',
+        serverName: 'demo-web-01',
+        status: 'ok',
+        exitCode: 0,
+        durationMs: 1240,
+        stdout: 'restarted',
+        precheck: { ok: true, latencyMs: 42, checks: [{ name: 'ssh', ok: true, detail: 'SSH 连接正常' }, { name: 'shell', ok: true, detail: 'Shell 可执行命令' }, { name: 'disk', ok: true, detail: '根分区可用 42 GB' }, { name: 'command', ok: true, detail: '命令 systemctl 可用' }] },
+      },
+      {
+        serverId: 'srv2',
+        serverName: 'demo-db-01',
+        status: 'blocked',
+        precheck: { ok: false, latencyMs: 1200, checks: [{ name: 'ssh', ok: false, detail: '连接超时' }], error: '连接超时' },
+      },
+    ],
   };
 
   const providers = [{ id: 'prov1', name: 'DeepSeek', kind: 'openai', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', hasApiKey: true, createdAt: '', updatedAt: '' }];
@@ -252,11 +411,15 @@ function mockScript() {
   };
 
   const noop = async () => undefined;
+  const mcpClients = [
+    { id: 'mcp1', name: 'Claude Code', scopes: ['read'], servers: [], enabled: true, createdAt: now - 86_400_000, calls: 128, lastUsedAt: now - 600_000, tokenPrefix: 'mcp_7F2a' },
+    { id: 'mcp2', name: 'Cursor', scopes: ['read', 'exec'], servers: ['srv1'], enabled: true, createdAt: now - 43_200_000, calls: 12, lastUsedAt: now - 3_600_000, tokenPrefix: 'mcp_K91c' },
+  ];
   const api = {
-    app: { info: async () => ({ version: '0.3.0', electron: '38.0.0', platform: 'win32', dataDir: 'C:/Users/demo/AppData/Roaming/subshell/data' }) },
+    app: { info: async () => ({ version: '0.3.8', electron: '38.8.6', platform: 'win32', dataDir: 'C:/Users/demo/AppData/Roaming/subshell/data' }) },
     settings: { get: async () => settings, save: async (patch) => Object.assign(settings, patch) },
     servers: { list: async () => servers, create: async () => servers[0], update: async () => servers[0], remove: noop, test: async () => ({ ok: true, latencyMs: 42 }) },
-    connection: { list: async () => servers.map((s) => ({ serverId: s.id, state: 'connected' })), connect: async (id) => ({ serverId: id, state: 'connected' }), disconnect: noop, resetHostKey: noop },
+    connection: { list: async () => servers.map((s) => ({ serverId: s.id, state: s.id === 'srv1' ? 'connected' : 'disconnected' })), connect: async (id) => ({ serverId: id, state: 'connected' }), disconnect: noop, resetHostKey: noop },
     terminal: { open: async () => 'term1', write: noop, resize: noop, close: noop },
     exec: async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false, durationMs: 1 }),
     monitor: { snapshot: async () => runtime, start: noop, stop: noop, acknowledge: noop },
@@ -276,7 +439,50 @@ function mockScript() {
     },
     audit: { list: async () => [] },
     health: { report: async () => report, resolve: async () => report, tickets: async () => tickets },
-    mcp: { info: async () => ({ running: true, port: 3929, token: 'demo-token-xxxxxxxx', mutationEnabled: false, endpoint: 'http://127.0.0.1:3929/mcp' }) },
+    mcp: {
+      info: async () => ({ running: true, port: 3929, token: 'demo-token-xxxxxxxx', mutationEnabled: false, endpoint: 'http://127.0.0.1:3929/mcp', clients: mcpClients }),
+      clients: async () => mcpClients,
+      saveClient: async () => ({ clients: mcpClients, token: 'demo-token' }),
+      toggleClient: async () => mcpClients,
+      rotateClient: async () => ({ clients: mcpClients, token: 'rotated-demo-token' }),
+      removeClient: async () => mcpClients,
+      calls: async () => [],
+    },
+    commands: {
+      list: async () => commands,
+      get: async (_serverId, id) => commands.find((item) => item.id === id) ?? null,
+      analyze: async (_serverId, id) => commands.find((item) => item.id === id),
+      planRollback: async (_serverId, id) => commands.find((item) => item.id === id),
+      applyRollback: async (_serverId, id) => commands.find((item) => item.id === id),
+      remove: noop,
+      clear: noop,
+    },
+    approval: {
+      rules: async () => [
+        { id: 'builtin-service-start', name: '启动或重启普通服务', pattern: '^\\s*(sudo\\s+)?systemctl\\s+(start|restart|reload)\\s+[\\w@.:-]+(\\.service)?\\s*$', action: 'approve', builtin: true, enabled: true, createdAt: now, updatedAt: now, note: '不涉及停止与禁用；关键服务会额外转人工确认。' },
+        { id: 'builtin-service-stop', name: '停止或禁用服务', pattern: '^\\s*(sudo\\s+)?systemctl\\s+(stop|disable|mask)\\b', action: 'ask', builtin: true, enabled: true, createdAt: now, updatedAt: now },
+        { id: 'builtin-pipe-shell', name: '下载并直接执行远程脚本', pattern: '(curl|wget)[^|]*\\|\\s*(sudo\\s+)?(ba|z|k)?sh\\b', action: 'reject', builtin: true, enabled: true, createdAt: now, updatedAt: now },
+      ],
+      saveRule: async () => [],
+      toggleRule: async () => [],
+      deleteRule: async () => [],
+      resetRules: async () => [],
+      records: async () => [],
+      test: async () => ({ decision: 'approve', source: 'rule', risk: 'medium', reason: '命中命令库「启动或重启普通服务」，本地风险 medium，自动放行', ruleName: '启动或重启普通服务' }),
+    },
+    security: {
+      report: async () => securityReport,
+      scan: async () => securityReport,
+      resolve: async () => securityReport,
+      remediate: async () => securityReport.remediations[0],
+      apply: async () => ({ remediation: securityReport.remediations[0], results: [] }),
+    },
+    cluster: {
+      precheck: async (ids) => clusterRun.targets.filter((target) => ids.includes(target.serverId)).map((target) => ({ serverId: target.serverId, serverName: target.serverName, ok: target.precheck.ok, latencyMs: target.precheck.latencyMs, checks: target.precheck.checks, error: target.precheck.error })),
+      run: async () => clusterRun,
+      cancel: noop,
+      history: async () => [clusterRun],
+    },
     sftp: {
       home: async () => '/home/ubuntu',
       list: async () => files,
@@ -288,7 +494,7 @@ function mockScript() {
       remove: noop,
     },
     tunnels: { list: async () => [{ id: 'tun1', serverId: 'srv1', label: '3306 → 127.0.0.1:3306', localPort: 3306, remoteHost: '127.0.0.1', remotePort: 3306, running: true, connections: 2, since: now - 600_000 }], save: async () => [], start: noop, stop: noop, remove: async () => [] },
-    update: { check: async () => ({ current: '0.3.0', latest: '0.3.0', hasUpdate: false, url: '', checkedAt: now }), open: noop },
+    update: { check: async () => ({ current: '0.3.8', latest: '0.3.8', hasUpdate: false, url: '', checkedAt: now }), open: noop },
     events: { on: () => () => {} },
   };
 
@@ -319,6 +525,13 @@ async function main() {
     ['welcome', async () => {}],
     ['overview', async () => clickNav(page, '概览')],
     ['health', async () => clickNav(page, '体检')],
+    ['security', async () => clickNav(page, '安全')],
+    ['history', async () => {
+      await clickNav(page, '历史');
+      await page.waitForTimeout(400);
+      const row = page.locator('button:has-text("systemctl restart nginx")').first();
+      if (await row.count()) await row.click();
+    }],
     ['files', async () => {
       await clickNav(page, '文件');
       // 打开一个文本文件，展示预览面板
@@ -327,6 +540,25 @@ async function main() {
     }],
     ['terminal', async () => clickNav(page, '终端')],
     ['assistant', async () => clickNav(page, 'AI 助手')],
+    ['settings', async () => {
+      const button = page.locator('aside button:has-text("设置")').first();
+      if (await button.count()) await button.click();
+      await page.waitForTimeout(500);
+    }],
+    ['cluster', async () => {
+      const close = page.locator('button[aria-label="关闭"]').first();
+      if (await close.count()) await close.click();
+      const button = page.locator('aside button:has-text("集群运维")').first();
+      if (await button.count()) await button.click();
+      await page.waitForTimeout(400);
+      const selectAll = page.locator('button:has-text("全选")').first();
+      if (await selectAll.count()) await selectAll.click();
+      const command = page.getByPlaceholder('例如：apt-get update && apt-get install -y fail2ban').first();
+      if (await command.count()) await command.fill('systemctl restart nginx');
+      const precheck = page.locator('button:has-text("前置预检")').first();
+      if (await precheck.count()) await precheck.click();
+      await page.waitForTimeout(600);
+    }],
   ];
 
   const captured = [];

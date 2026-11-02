@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Plus, Search, Settings, Server } from 'lucide-react';
+import { Layers, Plus, Search, Settings, Server } from 'lucide-react';
 import { useApp } from '../store/app';
 import { useI18n } from '../lib/i18n';
 import { ConnectionDot } from './ConnectionDot';
@@ -105,6 +105,13 @@ export function Sidebar() {
       </div>
 
       <div className="flex-none border-t border-[var(--border)] p-2">
+        <button
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[12.5px] text-[var(--muted)] transition-colors hover:bg-[var(--panel-2)] hover:text-[var(--text)]"
+          onClick={() => setDialog('cluster')}
+        >
+          <Layers size={14} />
+          <span className="flex-1">{t('cluster.nav')}</span>
+        </button>
         <button
           className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[12.5px] text-[var(--muted)] transition-colors hover:bg-[var(--panel-2)] hover:text-[var(--text)]"
           onClick={() => setDialog('settings')}

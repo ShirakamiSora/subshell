@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ServerProfile } from '../../shared/types';
+import type { SubshellDb } from './db';
 import { createLogger } from '../util/logger';
 
 const log = createLogger('profile-store');
 
-/** profile.json 的结构版本，与 ServerProfile.schemaVersion 对应。 */
+/** profile 的结构版本，与 ServerProfile.schemaVersion 对应。 */
 const SCHEMA_VERSION = 2;
 
 /** 把旧版本档案补齐成当前结构，缺字段用安全默认值。 */
@@ -40,23 +41,19 @@ function normalizeProfile(raw: unknown, serverId: string): ServerProfile | null 
   } as ServerProfile;
 }
 
-/** 每个服务器一份档案，独立文件，便于备份与导出。 */
+/** 每个服务器一份档案，存放在 SQLite 的 `profile:<serverId>` 文档中。 */
 export class ProfileStore {
   private cache = new Map<string, ServerProfile | null>();
 
-  constructor(private readonly dataDir: string) {}
-
-  private file(serverId: string): string {
-    return join(this.dataDir, 'servers', serverId, 'profile.json');
-  }
+  constructor(private readonly db: SubshellDb) {}
 
   get(serverId: string): ServerProfile | null {
     if (this.cache.has(serverId)) return this.cache.get(serverId) ?? null;
-    const file = this.file(serverId);
     let profile: ServerProfile | null = null;
-    if (existsSync(file)) {
+    const raw = this.db.doc(`profile:${serverId}`);
+    if (raw) {
       try {
-        const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+        const parsed = JSON.parse(raw) as unknown;
         profile = normalizeProfile(parsed, serverId);
         // 旧版本档案读入后立即迁移写回，避免每次启动重复处理。
         if (profile && (parsed as ServerProfile | null)?.schemaVersion !== SCHEMA_VERSION) {
@@ -65,16 +62,34 @@ export class ProfileStore {
       } catch (error) {
         log.error(`档案解析失败: ${serverId}`, error);
       }
+    } else {
+      profile = this.importLegacy(serverId);
     }
     this.cache.set(serverId, profile);
     return profile;
   }
 
+  /** 从 v0.3.6 及更早版本的独立 profile.json 导入一次。 */
+  private importLegacy(serverId: string): ServerProfile | null {
+    const file = join(this.db.dataDir, 'servers', serverId, 'profile.json');
+    if (!existsSync(file)) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+      const profile = normalizeProfile(parsed, serverId);
+      if (profile) {
+        this.save(serverId, profile);
+        log.info(`已迁移服务器档案到 SQLite: ${serverId}`);
+      }
+      return profile;
+    } catch (error) {
+      log.warn(`旧档案迁移失败: ${serverId}`, error);
+      return null;
+    }
+  }
+
   save(serverId: string, profile: ServerProfile): ServerProfile {
-    const file = this.file(serverId);
-    mkdirSync(join(file, '..'), { recursive: true });
     const next: ServerProfile = { ...profile, schemaVersion: SCHEMA_VERSION };
-    writeFileSync(file, JSON.stringify(next, null, 2), 'utf8');
+    this.db.setDoc(`profile:${serverId}`, JSON.stringify(next));
     this.cache.set(serverId, next);
     return next;
   }
@@ -88,10 +103,6 @@ export class ProfileStore {
 
   remove(serverId: string): void {
     this.cache.delete(serverId);
-    try {
-      rmSync(join(this.dataDir, 'servers', serverId), { recursive: true, force: true });
-    } catch (error) {
-      log.warn(`删除档案失败: ${serverId}`, error);
-    }
+    this.db.deleteDoc(`profile:${serverId}`);
   }
 }

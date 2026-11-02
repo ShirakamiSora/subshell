@@ -58,12 +58,20 @@ export function Assistant({ serverId }: { serverId: string }) {
   const usage = useMemo(() => {
     let inputTokens = 0;
     let outputTokens = 0;
+    let cachedInputTokens = 0;
     for (const message of chat) {
       if (!message.usage) continue;
       inputTokens += message.usage.inputTokens ?? 0;
       outputTokens += message.usage.outputTokens ?? 0;
+      cachedInputTokens += message.usage.cachedInputTokens ?? 0;
     }
-    return { inputTokens, outputTokens, total: inputTokens + outputTokens };
+    return {
+      inputTokens,
+      outputTokens,
+      cachedInputTokens,
+      total: inputTokens + outputTokens,
+      cacheRate: inputTokens > 0 ? (cachedInputTokens / inputTokens) * 100 : null,
+    };
   }, [chat]);
   const estimatedCost = settings
     ? (usage.inputTokens / 1_000_000) * settings.inputPricePerMTok +
@@ -148,6 +156,11 @@ export function Assistant({ serverId }: { serverId: string }) {
           >
             <Coins size={11} />
             {usage.total >= 1000 ? `${(usage.total / 1000).toFixed(1)}k` : usage.total} tokens
+            {usage.cacheRate !== null && (
+              <span className="text-[var(--muted-2)]" title={t('usage.cacheHint')}>
+                · cache {usage.cacheRate.toFixed(0)}%
+              </span>
+            )}
             {estimatedCost > 0 && (
               <span className="text-[var(--muted-2)]">
                 · {estimatedCost < 0.01 ? '<¥0.01' : `¥${estimatedCost.toFixed(2)}`}

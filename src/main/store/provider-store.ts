@@ -1,18 +1,21 @@
+import { join } from 'node:path';
 import type { ProviderConfig, ProviderInput } from '../../shared/types';
-import { JsonStore } from './json-store';
+import type { SubshellDb } from './db';
+import { SqliteStore } from './sqlite-store';
 import type { SecretStore } from './secrets';
 import { shortId } from '../util/id';
 
-/** 模型服务商配置。API Key 只存在于系统凭据库，配置文件中仅保存 hasApiKey 标记。 */
+/** 模型服务商配置。API Key 只存在于系统凭据库，本地库中仅保存 hasApiKey 标记。 */
 export class ProviderStore {
-  private readonly store: JsonStore<ProviderConfig[]>;
+  private readonly store: SqliteStore<ProviderConfig[]>;
 
   constructor(
-    dataDir: string,
+    db: SubshellDb,
     private readonly secrets: SecretStore,
   ) {
-    this.store = new JsonStore<ProviderConfig[]>(`${dataDir}/providers.json`, () => [], {
+    this.store = new SqliteStore<ProviderConfig[]>(db, 'providers', () => [], {
       version: 2,
+      legacyFile: join(db.dataDir, 'providers.json'),
       migrate: (data) => (Array.isArray(data) ? (data as ProviderConfig[]) : []),
     });
   }

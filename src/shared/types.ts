@@ -313,10 +313,14 @@ export interface UsageServerSummary {
   input: number;
   output: number;
   messages: number;
+  /** 命中的缓存输入 token */
+  cachedInput: number;
+  /** 写入缓存的 token */
+  cacheCreation: number;
 }
 
 export interface UsageSummary {
-  total: { input: number; output: number };
+  total: { input: number; output: number; cachedInput: number; cacheCreation: number };
   servers: UsageServerSummary[];
 }
 
@@ -353,6 +357,13 @@ export interface AgentToolCall {
   /** 审批说明（影响、回滚） */
   impact?: string;
   rollback?: string;
+  /** 智能审批的判定来源与理由（未经过智能审批时为空） */
+  approval?: {
+    source: ApprovalSource;
+    reason: string;
+    auto: boolean;
+    ruleName?: string;
+  };
   createdAt: number;
   finishedAt?: number;
 }
@@ -366,7 +377,14 @@ export interface ChatMessage {
   toolCalls?: AgentToolCall[];
   /** 是否被用户中止 */
   interrupted?: boolean;
-  usage?: { inputTokens?: number; outputTokens?: number };
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    /** 命中服务端上下文缓存的输入 token（价格通常更低） */
+    cachedInputTokens?: number;
+    /** 写入缓存的 token（Anthropic cache_creation）；不参与命中率计算 */
+    cacheCreationTokens?: number;
+  };
 }
 
 export type AgentRunState = 'idle' | 'thinking' | 'tool' | 'awaiting_approval' | 'done' | 'error' | 'cancelled';
@@ -376,6 +394,8 @@ export interface AgentRunStatus {
   state: AgentRunState;
   round: number;
   error?: string;
+  /** 当前轮稳定系统提示的版本指纹；变化说明缓存前缀失效（档案更新等）。 */
+  promptVersion?: string;
 }
 
 export type AgentStreamEvent =
@@ -383,7 +403,7 @@ export type AgentStreamEvent =
   | { type: 'delta'; serverId: string; messageId: string; text: string }
   | { type: 'message'; serverId: string; message: ChatMessage }
   | { type: 'tool'; serverId: string; call: AgentToolCall }
-  | { type: 'usage'; serverId: string; inputTokens: number; outputTokens: number }
+  | { type: 'usage'; serverId: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number }
   | { type: 'summary'; serverId: string; text: string; ts: number };
 
 export interface ApprovalDecision {
@@ -437,6 +457,20 @@ export interface AppSettings {
   inputPricePerMTok: number;
   /** 每百万输出 token 的价格（元），用于估算金额，手工填写 */
   outputPricePerMTok: number;
+  /** 智能审批：命令库匹配 + 模型独立会话判定 */
+  smartApprovalEnabled: boolean;
+  /** 智能审批：命令库未命中时是否交给模型判断 */
+  smartApprovalUseModel: boolean;
+  /** 记录命令历史（终端、AI、手动与集群执行） */
+  commandHistoryEnabled: boolean;
+  /** 每台服务器保留的命令历史条数上限 */
+  commandHistoryRetention: number;
+  /** 连接后与定时执行服务器安全检查 */
+  securityAutoScan: boolean;
+  /** 安全扫描间隔（小时） */
+  securityScanIntervalHours: number;
+  /** 集群批量执行的并发数 */
+  clusterParallelism: number;
 }
 
 export interface AuditEntry {
@@ -581,4 +615,339 @@ export interface TunnelStatus extends TunnelConfig {
   connections: number;
   since?: number;
   error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// v0.3.1 命令历史与智能回退
+// ---------------------------------------------------------------------------
+
+/** 命令来源：AI 工具、交互式终端、手动执行、集群下发、MCP 调用、回退与安全修复执行。 */
+export type CommandSource = 'ai' | 'terminal' | 'manual' | 'cluster' | 'mcp' | 'rollback' | 'security';
+
+export interface CommandHistoryAnalysis {
+  /** 这条命令做了什么 */
+  summary: string;
+  /** 影响范围与副作用 */
+  impact: string;
+  /** 风险点与注意事项 */
+  riskNotes: string[];
+  /** 是否可以安全回退 */
+  reversible: boolean;
+  generatedAt: number;
+  model?: string;
+  error?: string;
+}
+
+export interface RollbackStep {
+  command: string;
+  purpose: string;
+  risk: RiskLevel;
+}
+
+export interface RollbackStepResult {
+  command: string;
+  ok: boolean;
+  output: string;
+  exitCode?: number | null;
+}
+
+/**
+ * 智能回退方案。由模型在独立会话中生成，只作为建议：
+ * 必须由用户确认后才会执行，且每条命令仍走本地风险分级。
+ */
+export interface RollbackPlan {
+  entryId: string;
+  summary: string;
+  steps: RollbackStep[];
+  /** 执行回退后可能出现的情况（模型预判） */
+  predictions: string[];
+  /** 回退动作与服务器上其他服务/配置的潜在冲突 */
+  conflicts: string[];
+  confidence: 'low' | 'medium' | 'high';
+  generatedAt: number;
+  status: 'planned' | 'executed' | 'failed' | 'cancelled';
+  results?: RollbackStepResult[];
+  error?: string;
+}
+
+export interface CommandHistoryEntry {
+  id: string;
+  serverId: string;
+  command: string;
+  source: CommandSource;
+  risk: RiskLevel;
+  ok: boolean;
+  exitCode?: number | null;
+  durationMs?: number;
+  stdout?: string;
+  stderr?: string;
+  ts: number;
+  /** 执行目的（AI 工具或集群下发时提供） */
+  purpose?: string;
+  /** 模型对这条命令的分析 */
+  analysis?: CommandHistoryAnalysis;
+  /** 最近一次生成的智能回退方案 */
+  rollback?: RollbackPlan;
+  /** 是否已经执行过回退 */
+  reverted?: boolean;
+}
+
+export interface CommandHistoryQuery {
+  limit?: number;
+  query?: string;
+  source?: CommandSource;
+}
+
+// ---------------------------------------------------------------------------
+// v0.3.2 智能审批
+// ---------------------------------------------------------------------------
+
+export type ApprovalAction = 'approve' | 'reject' | 'ask';
+export type ApprovalSource = 'rule' | 'model' | 'user' | 'session' | 'risk';
+
+export interface ApprovalRule {
+  id: string;
+  name: string;
+  /** 正则表达式，匹配完整命令（不区分大小写） */
+  pattern: string;
+  action: ApprovalAction;
+  /** 命中时展示的风险等级（不能覆盖本地 blocked/high 判定） */
+  risk?: RiskLevel;
+  note?: string;
+  builtin?: boolean;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ApprovalRuleInput {
+  id?: string;
+  name: string;
+  pattern: string;
+  action: ApprovalAction;
+  note?: string;
+  enabled?: boolean;
+}
+
+export interface ApprovalRecord {
+  id: string;
+  serverId: string;
+  command: string;
+  decision: ApprovalAction;
+  source: ApprovalSource;
+  risk: RiskLevel;
+  reason: string;
+  ruleId?: string;
+  ruleName?: string;
+  auto: boolean;
+  ts: number;
+}
+
+/** 一次审批判定的结果。模型只能给出建议，不能执行命令。 */
+export interface ApprovalVerdict {
+  decision: ApprovalAction;
+  source: ApprovalSource;
+  risk: RiskLevel;
+  reason: string;
+  ruleId?: string;
+  ruleName?: string;
+}
+
+// ---------------------------------------------------------------------------
+// v0.3.3 服务器安全
+// ---------------------------------------------------------------------------
+
+export type SecuritySeverity = 'critical' | 'warning' | 'info';
+export type SecurityFindingStatus = 'open' | 'fixed' | 'ignored' | 'accepted';
+export type SecurityKind =
+  | 'port'
+  | 'service'
+  | 'ssh'
+  | 'firewall'
+  | 'account'
+  | 'update'
+  | 'certificate'
+  | 'docker'
+  | 'permission'
+  | 'time'
+  | 'log'
+  | 'custom';
+
+export interface SecurityFinding {
+  id: string;
+  kind: SecurityKind;
+  severity: SecuritySeverity;
+  title: string;
+  detail: string;
+  /** 支撑判断的原始证据（已脱敏） */
+  evidence?: string;
+  suggestion?: string;
+  status: SecurityFindingStatus;
+  updatedAt: number;
+}
+
+export interface SecurityRemediationStep {
+  title: string;
+  commands: string[];
+  risk: RiskLevel;
+  note?: string;
+}
+
+export interface SecurityConflict {
+  /** 可能受影响的服务、端口或配置 */
+  target: string;
+  reason: string;
+  severity: 'warning' | 'info';
+}
+
+export interface SecurityRemediation {
+  findingId: string;
+  serverId: string;
+  summary: string;
+  steps: SecurityRemediationStep[];
+  impact: string;
+  /** 与服务器上其他服务的冲突分析（结合服务器档案） */
+  conflicts: SecurityConflict[];
+  verification: string[];
+  generatedAt: number;
+  status: 'draft' | 'applied' | 'failed';
+  error?: string;
+}
+
+export interface SecurityScan {
+  serverId: string;
+  startedAt: number;
+  finishedAt: number;
+  trigger: 'manual' | 'scheduled' | 'connect';
+  findings: SecurityFinding[];
+  score: number;
+  summary: string;
+  error?: string;
+}
+
+export interface SecurityReport {
+  serverId: string;
+  scan: SecurityScan | null;
+  remediations: SecurityRemediation[];
+}
+
+export interface SecurityRemediationResult {
+  remediation: SecurityRemediation;
+  results: { command: string; ok: boolean; output: string }[];
+}
+
+// ---------------------------------------------------------------------------
+// v0.3.4 MCP 客户端与权限
+// ---------------------------------------------------------------------------
+
+export type McpScope = 'read' | 'exec' | 'admin';
+
+export interface McpClient {
+  id: string;
+  name: string;
+  scopes: McpScope[];
+  /** 允许访问的服务器 ID；空数组表示全部 */
+  servers: string[];
+  enabled: boolean;
+  createdAt: number;
+  lastUsedAt?: number;
+  calls: number;
+  /** Token 前缀，仅用于识别；完整 Token 只在创建/轮换时返回一次 */
+  tokenPrefix: string;
+}
+
+export interface McpClientInput {
+  id?: string;
+  name: string;
+  scopes: McpScope[];
+  servers: string[];
+  enabled?: boolean;
+}
+
+export interface McpClientsResult {
+  clients: McpClient[];
+  /** 新建或轮换时的一次性完整 Token */
+  token?: string;
+}
+
+export interface McpCallRecord {
+  id: string;
+  clientId: string;
+  tool: string;
+  serverId?: string;
+  ok: boolean;
+  detail: string;
+  ts: number;
+}
+
+export interface McpStatus {
+  running: boolean;
+  port: number;
+  /** 兼容旧客户端的默认 Token（完整权限受设置约束） */
+  token: string;
+  mutationEnabled: boolean;
+  endpoint: string;
+  clients: McpClient[];
+}
+
+// ---------------------------------------------------------------------------
+// v0.3.8 集群运维
+// ---------------------------------------------------------------------------
+
+export type ClusterTargetStatus =
+  | 'pending'
+  | 'prechecking'
+  | 'ready'
+  | 'blocked'
+  | 'running'
+  | 'ok'
+  | 'failed'
+  | 'skipped';
+
+export interface ClusterCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface ClusterTargetResult {
+  serverId: string;
+  serverName: string;
+  status: ClusterTargetStatus;
+  precheck: {
+    ok: boolean;
+    checks: ClusterCheck[];
+    latencyMs?: number;
+    error?: string;
+  };
+  exitCode?: number | null;
+  stdout?: string;
+  stderr?: string;
+  durationMs?: number;
+}
+
+export interface ClusterPrecheckResult {
+  serverId: string;
+  serverName: string;
+  ok: boolean;
+  latencyMs?: number;
+  checks: ClusterCheck[];
+  error?: string;
+}
+
+export interface ClusterRunInput {
+  serverIds: string[];
+  command: string;
+  purpose?: string;
+  concurrency?: number;
+}
+
+export interface ClusterRun {
+  id: string;
+  command: string;
+  purpose?: string;
+  startedAt: number;
+  finishedAt?: number;
+  phase: 'prechecking' | 'running' | 'done' | 'failed' | 'cancelled';
+  targets: ClusterTargetResult[];
 }

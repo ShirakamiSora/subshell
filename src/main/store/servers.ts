@@ -1,5 +1,7 @@
+import { join } from 'node:path';
 import type { ServerConfig } from '../../shared/types';
-import { JsonStore } from './json-store';
+import type { SubshellDb } from './db';
+import { SqliteStore } from './sqlite-store';
 
 export interface ServerInput {
   id?: string;
@@ -21,11 +23,12 @@ const COLORS = ['#2dd4bf', '#60a5fa', '#a78bfa', '#f472b6', '#fbbf24', '#34d399'
 
 /** 服务器列表存储。只保存非秘密配置，凭据由 SecretStore 单独管理。 */
 export class ServerStore {
-  private readonly store: JsonStore<ServerConfig[]>;
+  private readonly store: SqliteStore<ServerConfig[]>;
 
-  constructor(dataDir: string) {
-    this.store = new JsonStore<ServerConfig[]>(`${dataDir}/servers.json`, () => [], {
+  constructor(db: SubshellDb) {
+    this.store = new SqliteStore<ServerConfig[]>(db, 'servers', () => [], {
       version: 2,
+      legacyFile: join(db.dataDir, 'servers.json'),
       migrate: (data) => {
         const list = Array.isArray(data) ? data : [];
         return list.map((item) => {

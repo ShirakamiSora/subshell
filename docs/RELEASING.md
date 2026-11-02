@@ -11,8 +11,8 @@
 3. 提交后打 tag 并推送：
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.8
+git push origin v0.3.8
 ```
 
 tag 会触发 `.github/workflows/release.yml`，在 Windows / macOS / Linux 三个平台并行构建，
@@ -71,10 +71,10 @@ EV 证书的私钥不能导出，无法直接塞进 GitHub Actions。两条路�
 ### 2.4 验证
 
 ```powershell
-Get-AuthenticodeSignature .\release\Subshell-Setup-0.3.0.exe | Format-List Status, SignerCertificate
+Get-AuthenticodeSignature .\release\Subshell-Setup-0.3.8.exe | Format-List Status, SignerCertificate
 # 期望 Status = Valid，SignerCertificate.Subject 是你的公司/个人名
 
-signtool verify /pa /v .\release\Subshell-Setup-0.3.0.exe
+signtool verify /pa /v .\release\Subshell-Setup-0.3.8.exe
 ```
 
 SmartScreen 信誉：EV 立即生效；OV 需要累积下载量，刚发布时仍可能提示，通常几天到几周后消失。
@@ -154,7 +154,7 @@ gh secret set APPLE_TEAM_ID --repo ShirakamiSora/subshell            # 开发者
 ```bash
 codesign --verify --deep --strict --verbose=2 "Subshell.app"
 spctl --assess --type execute --verbose=4 "Subshell.app"    # 期望 accepted
-xcrun stapler validate Subshell-0.3.0-arm64.dmg             # 期望 stapler: OK
+xcrun stapler validate Subshell-0.3.8-arm64.dmg             # 期望 stapler: OK
 ```
 
 ## 4. 更新检查

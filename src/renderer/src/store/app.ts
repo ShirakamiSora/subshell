@@ -5,6 +5,9 @@ import type {
   AppInfo,
   AppSettings,
   ChatMessage,
+  ClusterRun,
+  CommandHistoryEntry,
+  CommandHistoryQuery,
   ConnectionInfo,
   HealthReport,
   IssueStatus,
@@ -14,6 +17,8 @@ import type {
   ProcessInfo,
   ProviderConfig,
   ProviderInput,
+  SecurityFindingStatus,
+  SecurityReport,
   ServerConfig,
   ServerProfile,
   ServerRuntime,
@@ -24,8 +29,8 @@ import type { ServerInput } from '@shared/api';
 import { api } from '../lib/api';
 import { translate } from '../lib/i18n';
 
-export type WorkspaceView = 'overview' | 'health' | 'file' | 'terminal' | 'assistant';
-export type DialogName = 'server' | 'settings' | 'provider' | 'audit' | 'profile' | 'tunnel';
+export type WorkspaceView = 'overview' | 'health' | 'history' | 'security' | 'file' | 'terminal' | 'assistant';
+export type DialogName = 'server' | 'settings' | 'provider' | 'audit' | 'profile' | 'tunnel' | 'cluster';
 
 interface Toast {
   id: number;
@@ -46,6 +51,9 @@ interface AppState {
   agents: Record<string, AgentRunStatus>;
   reports: Record<string, HealthReport>;
   tickets: Record<string, TicketRecord[]>;
+  commands: Record<string, CommandHistoryEntry[]>;
+  security: Record<string, SecurityReport>;
+  clusterRun: ClusterRun | null;
   activeServerId: string | null;
   openTabs: string[];
   view: WorkspaceView;
@@ -74,6 +82,19 @@ interface AppState {
   refreshHealth(id: string): Promise<void>;
   resolveIssue(id: string, issueId: string, status: IssueStatus): Promise<void>;
 
+  refreshCommands(id: string, query?: CommandHistoryQuery): Promise<void>;
+  analyzeCommandEntry(id: string, entryId: string): Promise<void>;
+  planRollback(id: string, entryId: string, note?: string): Promise<void>;
+  applyRollback(id: string, entryId: string): Promise<void>;
+  deleteCommandEntry(id: string, entryId: string): Promise<void>;
+  clearCommandHistory(id: string): Promise<void>;
+
+  refreshSecurity(id: string): Promise<void>;
+  scanSecurity(id: string): Promise<void>;
+  resolveFinding(id: string, findingId: string, status: SecurityFindingStatus): Promise<void>;
+  remediateFinding(id: string, findingId: string): Promise<void>;
+  applyRemediation(id: string, findingId: string): Promise<void>;
+
   handleConnection(info: ConnectionInfo): void;
   handleProfile(profile: ServerProfile): void;
   handleSample(serverId: string, sample: MetricSample): void;
@@ -85,6 +106,9 @@ interface AppState {
   }): void;
   handleAgentEvent(event: AgentStreamEvent): void;
   handleHealth(report: HealthReport): void;
+  handleCommandUpdate(serverId: string, entry: CommandHistoryEntry): void;
+  handleSecurity(report: SecurityReport): void;
+  handleCluster(run: ClusterRun): void;
   handleNotice(notice: { level: 'info' | 'warning' | 'error'; message: string }): void;
 
   sendMessage(id: string, text: string, issueId?: string): Promise<void>;
@@ -163,6 +187,9 @@ export const useApp = create<AppState>((set, get) => ({
   agents: {},
   reports: {},
   tickets: {},
+  commands: {},
+  security: {},
+  clusterRun: null,
   activeServerId: null,
   openTabs: [],
   view: 'overview',
@@ -357,6 +384,122 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
 
+  async refreshCommands(id, query) {
+    try {
+      const commands = await api.commands.list(id, query);
+      set((state) => ({ commands: { ...state.commands, [id]: commands } }));
+    } catch (error) {
+      get().notify('error', tr('toast.commandsFailed', { error: errorMessage(error) }));
+    }
+  },
+
+  async analyzeCommandEntry(id, entryId) {
+    get().notify('info', tr('toast.analyzingCommand'));
+    try {
+      const entry = await api.commands.analyze(id, entryId);
+      set((state) => ({ commands: { ...state.commands, [id]: mergeCommand(state.commands[id] ?? [], entry) } }));
+      get().notify('success', tr('toast.commandAnalyzed'));
+    } catch (error) {
+      get().notify('error', tr('toast.commandAnalyzeFailed', { error: errorMessage(error) }));
+    }
+  },
+
+  async planRollback(id, entryId, note) {
+    get().notify('info', tr('toast.planningRollback'));
+    try {
+      const entry = await api.commands.planRollback(id, entryId, note);
+      set((state) => ({ commands: { ...state.commands, [id]: mergeCommand(state.commands[id] ?? [], entry) } }));
+      get().notify('success', tr('toast.rollbackPlanned'));
+    } catch (error) {
+      get().notify('error', tr('toast.rollbackPlanFailed', { error: errorMessage(error) }));
+    }
+  },
+
+  async applyRollback(id, entryId) {
+    try {
+      const entry = await api.commands.applyRollback(id, entryId, true);
+      set((state) => ({ commands: { ...state.commands, [id]: mergeCommand(state.commands[id] ?? [], entry) } }));
+      get().notify('success', tr('toast.rollbackApplied'));
+    } catch (error) {
+      get().notify('error', tr('toast.rollbackApplyFailed', { error: errorMessage(error) }));
+    }
+  },
+
+  async deleteCommandEntry(id, entryId) {
+    try {
+      await api.commands.remove(id, entryId);
+      set((state) => ({
+        commands: {
+          ...state.commands,
+          [id]: (state.commands[id] ?? []).filter((entry) => entry.id !== entryId),
+        },
+      }));
+    } catch (error) {
+      get().notify('error', tr('toast.deleteFailed', { error: errorMessage(error) }));
+    }
+  },
+
+  async clearCommandHistory(id) {
+    try {
+      await api.commands.clear(id);
+      set((state) => ({ commands: { ...state.commands, [id]: [] } }));
+      get().notify('success', tr('toast.commandsCleared'));
+    } catch (error) {
+      get().notify('error', tr('toast.deleteFailed', { error: errorMessage(error) }));
+    }
+  },
+
+  async refreshSecurity(id) {
+    try {
+      const report = await api.security.report(id);
+      set((state) => ({ security: { ...state.security, [id]: report } }));
+    } catch {
+      // 安全报告是辅助信息，读取失败不打断主流程
+    }
+  },
+
+  async scanSecurity(id) {
+    get().notify('info', tr('toast.securityScanning'));
+    try {
+      const report = await api.security.scan(id);
+      set((state) => ({ security: { ...state.security, [id]: report } }));
+      get().notify('success', tr('toast.securityScanDone'));
+    } catch (error) {
+      get().notify('error', tr('toast.securityScanFailed', { error: errorMessage(error) }));
+    }
+  },
+
+  async resolveFinding(id, findingId, status) {
+    try {
+      const report = await api.security.resolve(id, findingId, status);
+      set((state) => ({ security: { ...state.security, [id]: report } }));
+    } catch (error) {
+      get().notify('error', tr('toast.issueFailed', { error: errorMessage(error) }));
+    }
+  },
+
+  async remediateFinding(id, findingId) {
+    get().notify('info', tr('toast.remediating'));
+    try {
+      await api.security.remediate(id, findingId);
+      await get().refreshSecurity(id);
+      get().notify('success', tr('toast.remediationReady'));
+    } catch (error) {
+      get().notify('error', tr('toast.remediationFailed', { error: errorMessage(error) }));
+    }
+  },
+
+  async applyRemediation(id, findingId) {
+    try {
+      const result = await api.security.apply(id, findingId, true);
+      await get().refreshSecurity(id);
+      if (result.remediation.status === 'applied') get().notify('success', tr('toast.remediationApplied'));
+      else get().notify('warning', tr('toast.remediationPartial'));
+    } catch (error) {
+      get().notify('error', tr('toast.remediationApplyFailed', { error: errorMessage(error) }));
+    }
+  },
+
   handleConnection(info) {
     set((state) => ({
       connections: { ...state.connections, [info.serverId]: info },
@@ -496,6 +639,23 @@ export const useApp = create<AppState>((set, get) => ({
       .catch(() => undefined);
   },
 
+  handleCommandUpdate(serverId, entry) {
+    set((state) => ({
+      commands: {
+        ...state.commands,
+        [serverId]: mergeCommand(state.commands[serverId] ?? [], entry),
+      },
+    }));
+  },
+
+  handleSecurity(report) {
+    set((state) => ({ security: { ...state.security, [report.serverId]: report } }));
+  },
+
+  handleCluster(run) {
+    set({ clusterRun: run });
+  },
+
   async sendMessage(id, text, issueId) {
     try {
       await api.ai.send(id, text, issueId);
@@ -606,6 +766,17 @@ export const useApp = create<AppState>((set, get) => ({
 /** store 里没有 React 上下文，用当前语言直接翻译 toast 文案。 */
 function tr(key: string, vars?: Record<string, string | number>): string {
   return translate(useApp.getState().settings?.language ?? 'zh', key, vars);
+}
+
+/** 把一条命令历史合并进列表：同 ID 替换，否则插入并按时间倒序。 */
+function mergeCommand(list: CommandHistoryEntry[], entry: CommandHistoryEntry): CommandHistoryEntry[] {
+  const index = list.findIndex((item) => item.id === entry.id);
+  if (index >= 0) {
+    const next = [...list];
+    next[index] = entry;
+    return next.sort((a, b) => b.ts - a.ts);
+  }
+  return [entry, ...list].sort((a, b) => b.ts - a.ts).slice(0, 500);
 }
 
 export function selectRuntime(state: AppState, serverId: string | null): ServerRuntime | null {

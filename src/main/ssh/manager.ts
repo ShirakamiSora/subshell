@@ -19,12 +19,61 @@ interface TerminalSession {
   serverId: string;
   connection: SshConnection;
   handle: ShellHandle;
+  /** 尚未提交的输入行，用于记录交互式命令历史。 */
+  buffer: string;
+  /** 正在解析方向键等转义序列。 */
+  escape: boolean;
+  /** 上一次输出疑似密码提示，下一条输入不记录。 */
+  maskNext: boolean;
 }
 
 export interface SshManagerEvents {
   status: (info: ConnectionInfo) => void;
   terminalData: (sessionId: string, data: string) => void;
   terminalExit: (sessionId: string) => void;
+  /** 用户在交互式终端里提交了一条命令（密码等敏感输入会被忽略）。 */
+  terminalCommand: (serverId: string, command: string) => void;
+}
+
+const PASSWORD_PROMPT = /(password|passphrase|密码|口令)/i;
+
+/**
+ * 把终端输入累积成命令。只处理可打印字符与回车，
+ * 方向键、Tab 补全等控制序列直接忽略；检测到密码提示后跳过下一条输入。
+ */
+function consumeTerminalInput(session: TerminalSession, data: string): string[] {
+  const commands: string[] = [];
+  for (const char of data) {
+    if (char === '\x1b') {
+      session.escape = true;
+      continue;
+    }
+    if (session.escape) {
+      // CSI / SS3 序列以字母或 ~ 结束
+      if (/[A-Za-z~]/.test(char)) session.escape = false;
+      continue;
+    }
+    if (char === '\r' || char === '\n') {
+      const command = session.buffer.trim();
+      session.buffer = '';
+      if (command) commands.push(command);
+      continue;
+    }
+    if (char === '\x7f' || char === '\b') {
+      session.buffer = session.buffer.slice(0, -1);
+      continue;
+    }
+    if (char === '\x03' || char === '\x1a') {
+      session.buffer = '';
+      session.maskNext = false;
+      continue;
+    }
+    if (char === '\t' || char < ' ') continue;
+    session.buffer += char;
+    // 防止异常输入撑爆内存
+    if (session.buffer.length > 8192) session.buffer = session.buffer.slice(-8192);
+  }
+  return commands;
 }
 
 /**
@@ -169,10 +218,21 @@ export class SshManager extends EventEmitter {
     const connection = await this.ensureConnected(serverId);
     const handle = await connection.openShell(cols, rows);
     const id = shortId('term');
-    const session: TerminalSession = { id, serverId, connection, handle };
+    const session: TerminalSession = {
+      id,
+      serverId,
+      connection,
+      handle,
+      buffer: '',
+      escape: false,
+      maskNext: false,
+    };
     this.terminals.set(id, session);
     handle.stream.on('data', (chunk: Buffer) => {
-      this.emit('terminalData', id, chunk.toString('utf8'));
+      const text = chunk.toString('utf8');
+      // 终端一旦出现密码提示，下一条输入不进入命令历史。
+      if (PASSWORD_PROMPT.test(text)) session.maskNext = true;
+      this.emit('terminalData', id, text);
     });
     handle.stream.on('close', () => {
       this.terminals.delete(id);
@@ -182,7 +242,16 @@ export class SshManager extends EventEmitter {
   }
 
   writeTerminal(sessionId: string, data: string): void {
-    this.terminals.get(sessionId)?.handle.write(data);
+    const session = this.terminals.get(sessionId);
+    if (!session) return;
+    session.handle.write(data);
+    for (const command of consumeTerminalInput(session, data)) {
+      if (session.maskNext) {
+        session.maskNext = false;
+        continue;
+      }
+      this.emit('terminalCommand', session.serverId, command);
+    }
   }
 
   resizeTerminal(sessionId: string, cols: number, rows: number): void {

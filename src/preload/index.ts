@@ -67,6 +67,46 @@ const api: SubshellApi = {
   },
   mcp: {
     info: () => ipcRenderer.invoke('mcp:info'),
+    clients: () => ipcRenderer.invoke('mcp:clients'),
+    saveClient: (input) => ipcRenderer.invoke('mcp:saveClient', input),
+    toggleClient: (id, enabled) => ipcRenderer.invoke('mcp:toggleClient', id, enabled),
+    rotateClient: (id) => ipcRenderer.invoke('mcp:rotateClient', id),
+    removeClient: (id) => ipcRenderer.invoke('mcp:removeClient', id),
+    calls: (limit) => ipcRenderer.invoke('mcp:calls', limit),
+  },
+  commands: {
+    list: (serverId, query) => ipcRenderer.invoke('commands:list', serverId, query),
+    get: (serverId, id) => ipcRenderer.invoke('commands:get', serverId, id),
+    analyze: (serverId, id) => ipcRenderer.invoke('commands:analyze', serverId, id),
+    planRollback: (serverId, id, note) => ipcRenderer.invoke('commands:planRollback', serverId, id, note),
+    applyRollback: (serverId, id, approved) =>
+      ipcRenderer.invoke('commands:applyRollback', serverId, id, approved),
+    remove: (serverId, id) => ipcRenderer.invoke('commands:remove', serverId, id),
+    clear: (serverId) => ipcRenderer.invoke('commands:clear', serverId),
+  },
+  approval: {
+    rules: () => ipcRenderer.invoke('approval:rules'),
+    saveRule: (input) => ipcRenderer.invoke('approval:saveRule', input),
+    toggleRule: (id, enabled) => ipcRenderer.invoke('approval:toggleRule', id, enabled),
+    deleteRule: (id) => ipcRenderer.invoke('approval:deleteRule', id),
+    resetRules: () => ipcRenderer.invoke('approval:resetRules'),
+    records: (serverId, limit) => ipcRenderer.invoke('approval:records', serverId, limit),
+    test: (serverId, command) => ipcRenderer.invoke('approval:test', serverId, command),
+  },
+  security: {
+    report: (serverId) => ipcRenderer.invoke('security:report', serverId),
+    scan: (serverId) => ipcRenderer.invoke('security:scan', serverId),
+    resolve: (serverId, findingId, status) =>
+      ipcRenderer.invoke('security:resolve', serverId, findingId, status),
+    remediate: (serverId, findingId) => ipcRenderer.invoke('security:remediate', serverId, findingId),
+    apply: (serverId, findingId, approved) =>
+      ipcRenderer.invoke('security:apply', serverId, findingId, approved),
+  },
+  cluster: {
+    precheck: (serverIds, command) => ipcRenderer.invoke('cluster:precheck', serverIds, command),
+    run: (input) => ipcRenderer.invoke('cluster:run', input),
+    cancel: (runId) => ipcRenderer.invoke('cluster:cancel', runId),
+    history: (limit) => ipcRenderer.invoke('cluster:history', limit),
   },
   update: {
     check: () => ipcRenderer.invoke('update:check'),

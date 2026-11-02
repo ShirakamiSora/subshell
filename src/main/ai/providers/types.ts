@@ -35,7 +35,14 @@ export interface ChatOptions {
 export interface ChatResult {
   text: string;
   toolCalls: ToolCallRequest[];
-  usage: { inputTokens: number; outputTokens: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    /** 命中服务端上下文缓存的输入 token（OpenAI prompt_tokens_details.cached_tokens 等） */
+    cachedInputTokens?: number;
+    /** 写入缓存的 token（Anthropic cache_creation_input_tokens） */
+    cacheCreationTokens?: number;
+  };
 }
 
 export interface Provider {

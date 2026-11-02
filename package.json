@@ -1,6 +1,6 @@
 {
   "name": "subshell",
-  "version": "0.3.0",
+  "version": "0.3.8",
   "private": true,
   "description": "AI 辅助运维 SSH 工作台",
   "author": "subshell",

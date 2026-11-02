@@ -79,12 +79,21 @@ export class OpenAiProvider implements Provider {
     const calls = new Map<number, ToolCallRequest>();
     let inputTokens = 0;
     let outputTokens = 0;
+    let cachedInputTokens = 0;
 
     for await (const data of sseData(response)) {
       if (!data || data === '[DONE]') continue;
       let payload: {
         choices?: { delta?: OpenAiDelta; finish_reason?: string }[];
-        usage?: { prompt_tokens?: number; completion_tokens?: number };
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          /** OpenAI 标准字段 */
+          prompt_tokens_details?: { cached_tokens?: number };
+          /** DeepSeek 兼容字段 */
+          prompt_cache_hit_tokens?: number;
+          prompt_cache_miss_tokens?: number;
+        };
       };
       try {
         payload = JSON.parse(data);
@@ -94,6 +103,10 @@ export class OpenAiProvider implements Provider {
       if (payload.usage) {
         inputTokens = payload.usage.prompt_tokens ?? inputTokens;
         outputTokens = payload.usage.completion_tokens ?? outputTokens;
+        cachedInputTokens =
+          payload.usage.prompt_tokens_details?.cached_tokens ??
+          payload.usage.prompt_cache_hit_tokens ??
+          cachedInputTokens;
       }
       const delta = payload.choices?.[0]?.delta;
       if (delta?.content) {
@@ -116,7 +129,12 @@ export class OpenAiProvider implements Provider {
     return {
       text,
       toolCalls: [...calls.values()].filter((call) => call.name),
-      usage: { inputTokens, outputTokens },
+      usage: {
+        inputTokens,
+        outputTokens,
+        // 只在确有缓存命中时携带该字段，保持旧客户端与测试的兼容。
+        ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
+      },
     };
   }
 }

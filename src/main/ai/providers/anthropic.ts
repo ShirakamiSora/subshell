@@ -75,7 +75,13 @@ export class AnthropicProvider implements Provider {
       temperature: options.temperature ?? 0.2,
       stream: true,
     };
-    if (system.trim()) body.system = system;
+    if (system.trim()) {
+      // 显式声明缓存断点：稳定段（档案、工作方式、安全边界）在多轮之间逐字节一致时，
+      // 服务端会复用前缀缓存；实时上下文已由 Agent 放在最后一条用户消息里。
+      body.system = [
+        { type: 'text', text: system, cache_control: { type: 'ephemeral' } },
+      ];
+    }
     if (options.tools.length) {
       body.tools = options.tools.map((tool) => ({
         name: tool.name,
@@ -103,13 +109,21 @@ export class AnthropicProvider implements Provider {
     const blocks = new Map<number, { id: string; name: string; json: string }>();
     let inputTokens = 0;
     let outputTokens = 0;
+    let cachedInputTokens = 0;
+    let cacheCreationTokens = 0;
 
     for await (const data of sseData(response)) {
       if (!data) continue;
       let payload: {
         type?: string;
         index?: number;
-        message?: { usage?: { input_tokens?: number } };
+        message?: {
+          usage?: {
+            input_tokens?: number;
+            cache_read_input_tokens?: number;
+            cache_creation_input_tokens?: number;
+          };
+        };
         content_block?: { type?: string; id?: string; name?: string; text?: string };
         delta?: {
           type?: string;
@@ -127,6 +141,9 @@ export class AnthropicProvider implements Provider {
 
       if (payload.type === 'message_start') {
         inputTokens = payload.message?.usage?.input_tokens ?? inputTokens;
+        cachedInputTokens = payload.message?.usage?.cache_read_input_tokens ?? cachedInputTokens;
+        cacheCreationTokens =
+          payload.message?.usage?.cache_creation_input_tokens ?? cacheCreationTokens;
       } else if (payload.type === 'content_block_start') {
         if (payload.content_block?.type === 'tool_use' && typeof payload.index === 'number') {
           blocks.set(payload.index, {
@@ -153,6 +170,16 @@ export class AnthropicProvider implements Provider {
       .filter((block) => block.name)
       .map((block) => ({ id: block.id, name: block.name, arguments: block.json || '{}' }));
 
-    return { text, toolCalls, usage: { inputTokens, outputTokens } };
+    return {
+      text,
+      toolCalls,
+      usage: {
+        // Anthropic 的 input_tokens 不含缓存读写；这里统一成「总输入」便于展示命中率。
+        inputTokens: inputTokens + cachedInputTokens + cacheCreationTokens,
+        outputTokens,
+        ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
+        ...(cacheCreationTokens > 0 ? { cacheCreationTokens } : {}),
+      },
+    };
   }
 }

@@ -1,4 +1,6 @@
-import { JsonStore } from './json-store';
+import { join } from 'node:path';
+import type { SubshellDb } from './db';
+import { SqliteStore } from './sqlite-store';
 import { createLogger } from '../util/logger';
 
 const log = createLogger('known-hosts');
@@ -8,10 +10,12 @@ const log = createLogger('known-hosts');
  * 用户可在「服务器设置」中清除记录后重新信任。
  */
 export class KnownHostStore {
-  private readonly store: JsonStore<Record<string, string>>;
+  private readonly store: SqliteStore<Record<string, string>>;
 
-  constructor(dataDir: string) {
-    this.store = new JsonStore<Record<string, string>>(`${dataDir}/known-hosts.json`, () => ({}));
+  constructor(db: SubshellDb) {
+    this.store = new SqliteStore<Record<string, string>>(db, 'known-hosts', () => ({}), {
+      legacyFile: join(db.dataDir, 'known-hosts.json'),
+    });
   }
 
   verify(hostKey: string, fingerprint: string): boolean {

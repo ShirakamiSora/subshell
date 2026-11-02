@@ -1,4 +1,5 @@
 import type {
+  CommandSource,
   ProfileChecklistItem,
   ProfileRisk,
   RiskLevel,
@@ -10,6 +11,7 @@ import type { RuntimeStore } from '../store/runtime-store';
 import type { ServerStore } from '../store/servers';
 import type { AuditStore } from '../store/audit';
 import type { SettingsStore } from '../store/settings';
+import type { RecordCommandInput } from '../store/command-history';
 import type { MonitorService } from '../monitor/collector';
 import type { ToolDefinition } from './providers/types';
 import {
@@ -31,6 +33,10 @@ export interface ToolContext {
   audit: AuditStore;
   settings: SettingsStore;
   monitor: MonitorService;
+  /** 命令来源（AI / MCP），用于命令历史归因。 */
+  source?: CommandSource;
+  /** 记录命令历史；未注入时不记录。 */
+  recordCommand?: (serverId: string, input: RecordCommandInput) => void;
 }
 
 export interface PreparedToolCall {
@@ -582,6 +588,17 @@ async function serviceAction(prepared: PreparedToolCall, ctx: ToolContext): Prom
     risk: prepared.risk,
     ok: result.exitCode === 0,
   });
+  ctx.recordCommand?.(ctx.serverId, {
+    command: prepared.command,
+    source: ctx.source ?? 'ai',
+    risk: prepared.risk,
+    ok: result.exitCode === 0,
+    exitCode: result.exitCode,
+    durationMs: result.durationMs,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    purpose: `${actionLabel(action)} ${kind === 'docker' ? '容器' : '服务'} ${name}`,
+  });
 
   let verification = '';
   if (kind === 'systemd' && ['start', 'restart', 'reload', 'stop'].includes(action)) {
@@ -714,6 +731,7 @@ async function listFiles(args: Record<string, unknown>, ctx: ToolContext): Promi
 async function runCommand(prepared: PreparedToolCall, ctx: ToolContext): Promise<ToolResult> {
   const command = str(prepared.args, 'command');
   if (!command) return { ok: false, output: '缺少命令' };
+  const purpose = str(prepared.args, 'purpose');
   const result = await ctx.ssh.exec(ctx.serverId, command, { timeoutMs: 60_000 });
   ctx.audit.append({
     serverId: ctx.serverId,
@@ -722,6 +740,17 @@ async function runCommand(prepared: PreparedToolCall, ctx: ToolContext): Promise
     detail: command,
     risk: prepared.risk,
     ok: result.exitCode === 0,
+  });
+  ctx.recordCommand?.(ctx.serverId, {
+    command,
+    source: ctx.source ?? 'ai',
+    risk: prepared.risk,
+    ok: result.exitCode === 0,
+    exitCode: result.exitCode,
+    durationMs: result.durationMs,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    purpose: purpose || undefined,
   });
   return {
     ok: result.exitCode === 0,

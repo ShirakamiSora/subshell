@@ -20,10 +20,11 @@ import type { SettingsStore } from '../store/settings';
 import type { ProviderStore } from '../store/provider-store';
 import type { MonitorService } from '../monitor/collector';
 import type { HealthService } from '../health/service';
-import { createProvider } from './providers';
 import type { Provider, ProviderMessage } from './providers/types';
-import { buildSystemPrompt } from './prompt';
-import { classifyCommand } from './risk';
+import { buildPromptParts, buildSystemPrompt } from './prompt';
+import { classifyCommand } from './risk';import type { SmartApprovalService } from '../approval/service';
+import type { CommandService } from '../command/service';
+import { resolveActiveProvider } from './provider-resolver';
 import {
   TOOL_DEFINITIONS,
   executeTool,
@@ -67,6 +68,10 @@ export interface AgentDeps {
   providers: ProviderStore;
   monitor: MonitorService;
   health: HealthService;
+  /** 智能审批（可选，便于测试与旧调用方） */
+  approvals?: SmartApprovalService;
+  /** 命令历史（可选） */
+  commands?: CommandService;
 }
 
 /**
@@ -113,18 +118,7 @@ export class AgentService extends EventEmitter {
   }
 
   private resolveProvider(): { provider: Provider; config: ProviderConfig } {
-    const settings = this.deps.settings.get();
-    const configs = this.deps.providers.list();
-    const config =
-      (settings.activeProviderId ? configs.find((item) => item.id === settings.activeProviderId) : null) ??
-      configs[0];
-    if (!config) throw new Error('尚未配置模型服务商，请先在设置中添加');
-    const apiKey = this.deps.providers.apiKey(config.id);
-    if (config.kind !== 'mock' && !apiKey) {
-      throw new Error(`「${config.name}」没有保存 API Key，请到设置 → 模型服务商里重新填写并保存`);
-    }
-    const provider = createProvider(config, apiKey);
-    return { provider, config };
+    return resolveActiveProvider(this.deps.providers, this.deps.settings);
   }
 
   /** 启动一次对话，立即返回消息 ID，循环在后台继续。 */
@@ -199,17 +193,19 @@ export class AgentService extends EventEmitter {
         this.finishRun(run, 'done');
         return;
       }
-      this.emitRun(run, { state: 'thinking', round });
-
-      const systemPrompt = buildSystemPrompt(
+      // 稳定段（档案、工作方式、安全边界）在多轮之间保持一致，便于命中前缀缓存；
+      // 实时指标与服务快照作为 liveContext 附加到最后一条用户消息，不污染缓存前缀。
+      const parts = buildPromptParts(
         this.buildContext(run.serverId, server),
         this.deps.settings.get().language,
       );
-      const messages = toProviderMessages(this.deps.chat.list(run.serverId), systemPrompt, {
+      this.emitRun(run, { state: 'thinking', round, promptVersion: parts.version });
+
+      const messages = toProviderMessages(this.deps.chat.list(run.serverId), parts.stable, {
         budgetTokens,
         reservedTokens: CHAT_MAX_TOKENS,
+        liveContext: parts.live,
       });
-
       const assistant: ChatMessage = {
         id: newMessageId(),
         role: 'assistant',
@@ -236,6 +232,8 @@ export class AgentService extends EventEmitter {
       assistant.usage = {
         inputTokens: result.usage.inputTokens,
         outputTokens: result.usage.outputTokens,
+        cachedInputTokens: result.usage.cachedInputTokens,
+        cacheCreationTokens: result.usage.cacheCreationTokens,
       };
       this.deps.chat.updateMessage(run.serverId, assistant.id, {
         content: assistant.content,
@@ -247,6 +245,7 @@ export class AgentService extends EventEmitter {
           serverId: run.serverId,
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
+          cachedInputTokens: result.usage.cachedInputTokens,
         });
       }
 
@@ -315,6 +314,8 @@ export class AgentService extends EventEmitter {
       audit: this.deps.audit,
       settings: this.deps.settings,
       monitor: this.deps.monitor,
+      source: 'ai',
+      recordCommand: (target, input) => this.deps.commands?.record(target, input),
     };
 
     const prepared: PreparedToolCall = parseError
@@ -362,13 +363,51 @@ export class AgentService extends EventEmitter {
 
     const settings = this.deps.settings.get();
     const sessionAllowed = this.sessionAllowed.get(serverId) ?? new Set<string>();
-    const autoApproved =
+    let autoApproved =
       !prepared.needsApproval ||
       (prepared.risk === 'read' && settings.autoApproveReadOnly) ||
-      // 智能审批只放行「低风险的服务启停/重载」。写入档案、改文件、任意命令都必须确认，
-      // 否则模型可以通过 update_profile 把任意文本写进下次对话的系统提示。
-      (settings.approvalMode === 'smart' && prepared.risk === 'low' && prepared.kind === 'service') ||
+      // 未开启智能审批时保留原有的「低风险服务启停直接执行」；
+      // 开启后统一由命令库/模型判定，避免绕过用户维护的规则。
+      (settings.approvalMode === 'smart' &&
+        !settings.smartApprovalEnabled &&
+        prepared.risk === 'low' &&
+        prepared.kind === 'service') ||
       (prepared.command ? sessionAllowed.has(prepared.command) : false);
+
+    // v0.3.2 智能审批：命令库匹配 + 模型独立会话判定。
+    // 只在原本需要审批时介入，判定结果与理由展示在工具卡片上。
+    if (!autoApproved && prepared.needsApproval && settings.smartApprovalEnabled && this.deps.approvals) {
+      try {
+        const verdict = await this.deps.approvals.decide({
+          serverId,
+          command: prepared.command ?? '',
+          risk: prepared.risk,
+          kind: prepared.kind,
+          purpose: typeof prepared.args.purpose === 'string' ? prepared.args.purpose : undefined,
+          title: prepared.title,
+        });
+        call.approval = {
+          source: verdict.source,
+          reason: verdict.reason,
+          auto: verdict.decision !== 'ask',
+          ruleName: verdict.ruleName,
+        };
+        this.deps.chat.updateMessage(serverId, assistant.id, { toolCalls: assistant.toolCalls });
+        this.emitEvent({ type: 'tool', serverId, call: { ...call } });
+        if (verdict.decision === 'approve') {
+          autoApproved = true;
+        } else if (verdict.decision === 'reject') {
+          call.status = 'rejected';
+          call.error = `智能审批拒绝：${verdict.reason}`;
+          call.finishedAt = Date.now();
+          this.emitEvent({ type: 'tool', serverId, call: { ...call } });
+          this.emitRun(run, { state: 'thinking' });
+          return call;
+        }
+      } catch (error) {
+        log.warn('智能审批失败，转人工确认', error);
+      }
+    }
 
     if (!autoApproved) {
       call.status = 'awaiting_approval';
@@ -601,6 +640,8 @@ export interface MessageBuildOptions {
   reservedTokens?: number;
   /** 最多保留多少个用户轮次。 */
   maxTurns?: number;
+  /** 每轮变化的实时上下文，附加到最后一条用户消息，避免破坏稳定前缀。 */
+  liveContext?: string;
 }
 
 /** 把本地对话历史转换为模型消息，在 token 预算内保留最近的完整轮次。 */
@@ -612,6 +653,7 @@ export function toProviderMessages(
   const maxTurns = Math.max(1, options.maxTurns ?? 12);
   const reserved = Math.max(1_024, options.reservedTokens ?? CHAT_MAX_TOKENS);
   const budget = Math.max(8_000, options.budgetTokens ?? DEFAULT_CONTEXT_WINDOW);
+  const live = options.liveContext?.trim() ?? '';
 
   // 按用户消息切轮，保证 assistant/tool 不会被从中间截断。
   const turns: ChatMessage[][] = [];
@@ -620,7 +662,7 @@ export function toProviderMessages(
     else turns.at(-1)!.push(message);
   }
 
-  let used = estimateTokens(system) + reserved;
+  let used = estimateTokens(system) + estimateTokens(live) + reserved;
   const selected: ChatMessage[][] = [];
   for (let index = turns.length - 1; index >= 0 && selected.length < maxTurns; index -= 1) {
     const turn = turns[index]!;
@@ -667,6 +709,17 @@ export function toProviderMessages(
           name: call.name,
           content: toolResultText(call),
         });
+      }
+    }
+  }
+
+  if (live) {
+    // 实时上下文只影响最后一条用户消息，系统提示与工具定义保持稳定。
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]!;
+      if (message.role === 'user') {
+        message.content = `${message.content}\n\n${live}`;
+        break;
       }
     }
   }

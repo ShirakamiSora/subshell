@@ -12,6 +12,7 @@ vi.mock('electron', () => ({
 }));
 
 const { DemoServer } = await import('../src/main/demo/demo-server');
+const { openDatabase, closeDatabase } = await import('../src/main/store/db');
 const { ServerStore } = await import('../src/main/store/servers');
 const { SecretStore } = await import('../src/main/store/secrets');
 const { KnownHostStore } = await import('../src/main/store/known-hosts');
@@ -25,9 +26,10 @@ let serverId = '';
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'subshell-manager-'));
-  const servers = new ServerStore(dir);
+  const db = openDatabase(dir);
+  const servers = new ServerStore(db);
   const secrets = new SecretStore(join(dir, 'secrets.json'));
-  const knownHosts = new KnownHostStore(dir);
+  const knownHosts = new KnownHostStore(db);
   manager = new SshManager(servers, secrets, knownHosts);
 
   demo = new DemoServer();
@@ -47,6 +49,7 @@ beforeAll(async () => {
 afterAll(() => {
   manager?.closeAll();
   demo?.stop();
+  closeDatabase(dir);
   rmSync(dir, { recursive: true, force: true });
 });
 

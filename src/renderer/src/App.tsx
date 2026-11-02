@@ -10,6 +10,7 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { AuditDialog } from './components/AuditDialog';
 import { ProfileDialog } from './components/ProfileDialog';
 import { TunnelDialog } from './components/TunnelDialog';
+import { ClusterDialog } from './components/ClusterDialog';
 
 export default function App() {
   const ready = useApp((state) => state.ready);
@@ -26,6 +27,9 @@ export default function App() {
   const handleStatus = useApp((state) => state.handleStatus);
   const handleAgentEvent = useApp((state) => state.handleAgentEvent);
   const handleHealth = useApp((state) => state.handleHealth);
+  const handleCommandUpdate = useApp((state) => state.handleCommandUpdate);
+  const handleSecurity = useApp((state) => state.handleSecurity);
+  const handleCluster = useApp((state) => state.handleCluster);
   const handleNotice = useApp((state) => state.handleNotice);
 
   useEffect(() => {
@@ -51,10 +55,13 @@ export default function App() {
       api.events.on('monitor:status', ({ serverId, ...payload }) => handleStatus(serverId, payload)),
       api.events.on('agent:event', handleAgentEvent),
       api.events.on('health:update', handleHealth),
+      api.events.on('command:update', ({ serverId, entry }) => handleCommandUpdate(serverId, entry)),
+      api.events.on('security:update', handleSecurity),
+      api.events.on('cluster:update', handleCluster),
       api.events.on('app:notice', handleNotice),
     ];
     return () => unsubscribe.forEach((off) => off());
-  }, [handleConnection, handleProfile, handleSample, handleEvents, handleStatus, handleAgentEvent, handleHealth, handleNotice]);
+  }, [handleConnection, handleProfile, handleSample, handleEvents, handleStatus, handleAgentEvent, handleHealth, handleCommandUpdate, handleSecurity, handleCluster, handleNotice]);
 
   if (!ready) {
     return (
@@ -84,6 +91,7 @@ export default function App() {
       {dialog === 'tunnel' && activeServerId && (
         <TunnelDialog serverId={activeServerId} onClose={() => setDialog(null)} />
       )}
+      {dialog === 'cluster' && <ClusterDialog onClose={() => setDialog(null)} />}
     </div>
   );
 }

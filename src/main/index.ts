@@ -1,5 +1,13 @@
 import { app, BrowserWindow, Menu, Notification, dialog, session, shell } from 'electron';
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { AppContext } from './context';
@@ -7,28 +15,46 @@ import { registerIpc } from './ipc';
 import { checkForUpdates, openDownloadPage } from './update/service';
 import { createLogger } from './util/logger';
 
+function prepareWritableDir(dir: string): boolean {
+  try {
+    mkdirSync(dir, { recursive: true });
+    const probe = join(dir, '.write-probe');
+    writeFileSync(probe, 'ok', 'utf8');
+    rmSync(probe, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * 选择 Electron 运行时目录（缓存、Local Storage、单实例锁都写这里）。
- * 优先程序同目录：便携版最稳，也避开部分安全软件/受限令牌对 AppData 的拦截。
+ * 选择 Electron 运行时目录（Chromium 缓存、Local Storage、单实例锁都写这里）。
+ *
+ * 默认使用 `%LOCALAPPDATA%\subshell`。旧版本优先使用程序同目录，
+ * 当程序目录由管理员上下文创建时，其 ACL 会阻止 Chromium 的低完整性子进程写入，
+ * 表现为「普通双击后界面卡死，管理员运行正常」。LocalAppData 是每个用户
+ * 自己创建、权限正确的目录，也是 Electron/Chromium 的推荐位置。
+ *
+ * 只有显式传入 `--portable`（或设置 `SUBSHELL_PORTABLE=1`）时才把运行时放在程序目录。
  */
 function configureUserData(): void {
-  const candidates = [
-    join(dirname(app.getPath('exe')), 'subshell-runtime'),
-    join(app.getPath('appData'), 'subshell'),
-    join(tmpdir(), 'subshell-runtime'),
-  ];
-  for (const dir of candidates) {
-    try {
-      mkdirSync(dir, { recursive: true });
-      const probe = join(dir, '.write-probe');
-      writeFileSync(probe, 'ok', 'utf8');
-      rmSync(probe, { force: true });
-      app.setPath('userData', dir);
+  const portable = process.argv.includes('--portable') || process.env.SUBSHELL_PORTABLE === '1';
+  if (portable) {
+    const portableDir = join(dirname(app.getPath('exe')), 'subshell-runtime');
+    if (prepareWritableDir(portableDir)) {
+      app.setPath('userData', portableDir);
       return;
-    } catch {
-      // 尝试下一个候选目录
     }
   }
+
+  const localAppData = process.env.LOCALAPPDATA || join(app.getPath('appData'));
+  const preferred = join(localAppData, 'subshell');
+  if (prepareWritableDir(preferred)) {
+    app.setPath('userData', preferred);
+    return;
+  }
+
+  // 最后保留 Electron 默认的 %APPDATA%\<name>，不要落到程序目录。
 }
 
 configureUserData();
@@ -65,6 +91,7 @@ let context: AppContext | null = null;
 let disposed = false;
 
 startupLog(`main module loaded, electron=${process.versions.electron}, argv=${process.argv.join(' ')}`);
+startupLog(`userData=${app.getPath('userData')}`);
 
 // 注意：不要全局禁用硬件加速，否则渲染全部走软件路径，界面会明显卡顿。
 // 如果个别机器 GPU 初始化失败，可在快捷方式里追加 --disable-gpu。
@@ -142,29 +169,60 @@ app.on('before-quit', () => {
 });
 
 /**
- * 选择可写的数据目录。优先 %APPDATA%，被安全软件或受限令牌拒绝时，
- * 回退到程序同目录，最后回退到系统临时目录，避免“保存失败”。
+ * 选择可写的数据目录。默认 `userData/data`；
+ * 如果新位置为空，会从旧版本的三个常见位置迁移一次数据：
+ * - `%APPDATA%\subshell\data`（旧默认）
+ * - 程序目录的 `subshell-runtime/data`（旧便携版）
+ * - 程序目录的 `subshell-data`（旧回退位置）
+ *
+ * 迁移只复制数据文件，不复制 Chromium 缓存，也不会删除旧目录。
  */
 function pickDataRoot(): string {
+  const primary = join(app.getPath('userData'), 'data');
+  migrateLegacyData(primary);
+
   const candidates = [
-    join(app.getPath('userData'), 'data'),
+    primary,
     join(dirname(app.getPath('exe')), 'subshell-data'),
     join(tmpdir(), 'subshell-data'),
   ];
   for (const dir of candidates) {
-    try {
-      mkdirSync(dir, { recursive: true });
-      const probe = join(dir, '.write-probe');
-      writeFileSync(probe, 'ok', 'utf8');
-      rmSync(probe, { force: true });
+    if (prepareWritableDir(dir)) {
       startupLog(`data root selected: ${dir}`);
       return dir;
-    } catch (error) {
-      startupLog(`data root rejected (${dir}): ${String(error)}`);
     }
+    startupLog(`data root rejected (${dir})`);
   }
   startupLog(`no writable data root, fallback to ${candidates[0]}`);
   return candidates[0]!;
+}
+
+function migrateLegacyData(primary: string): void {
+  try {
+    if (existsSync(primary) && readdirSync(primary).length > 0) return;
+  } catch {
+    return;
+  }
+
+  // 先合并最近使用的程序目录数据，再补充旧默认目录中缺失的文件（例如服务器列表）。
+  // cpSync 使用 force:false，已存在的同名文件保留，多个来源可以互补而不互相覆盖。
+  const legacyDirs = [
+    join(dirname(app.getPath('exe')), 'subshell-runtime', 'data'),
+    join(dirname(app.getPath('exe')), 'subshell-data'),
+    join(app.getPath('appData'), 'subshell', 'data'),
+  ];
+
+  for (const legacy of legacyDirs) {
+    try {
+      if (legacy === primary || !existsSync(legacy)) continue;
+      if (readdirSync(legacy).length === 0) continue;
+      mkdirSync(primary, { recursive: true });
+      cpSync(legacy, primary, { recursive: true, force: false, errorOnExist: false });
+      startupLog(`legacy data merged: ${legacy} -> ${primary}`);
+    } catch (error) {
+      startupLog(`legacy data migration failed (${legacy}): ${String(error)}`);
+    }
+  }
 }
 
 function createWindow(): BrowserWindow {
@@ -209,12 +267,18 @@ function createWindow(): BrowserWindow {
   window.webContents.on('did-fail-load', (_event, code, description, url) => {
     startupLog(`did-fail-load code=${code} desc=${description} url=${url}`);
   });
+  window.webContents.on('did-finish-load', () => {
+    startupLog('did-finish-load');
+  });
   window.webContents.on('render-process-gone', (_event, details) => {
     startupLog(`render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
   });
   window.webContents.on('preload-error', (_event, path, error) => {
     startupLog(`preload-error path=${path} error=${String(error)}`);
   });
+  // 渲染层无响应时记录，便于用户反馈「双击卡死」时定位是主进程还是渲染进程。
+  window.on('unresponsive', () => startupLog('window unresponsive'));
+  window.on('responsive', () => startupLog('window responsive'));
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
@@ -341,4 +405,7 @@ function forwardEvents(ctx: AppContext): void {
   ctx.recon.on('profile', (profile) => send('profile:update', profile));
   ctx.agent.on('event', (event) => send('agent:event', event));
   ctx.health.on('update', (serverId: string, report) => send('health:update', report));
+  ctx.commands.on('update', (serverId: string, entry) => send('command:update', { serverId, entry }));
+  ctx.security.on('update', (serverId: string, report) => send('security:update', report));
+  ctx.cluster.on('update', (run) => send('cluster:update', run));
 }

@@ -5,6 +5,7 @@ import type { ServerInput, TestResult } from '../shared/api';
 import type { ApprovalDecision, IssueStatus, ProviderConfig, ProviderInput, ServerConfig } from '../shared/types';
 import { testConnection } from './ssh/tester';
 import { createProvider } from './ai/providers';
+import { classifyCommand } from './ai/risk';
 import { profileToMarkdown } from './recon/service';
 import { checkForUpdates, openDownloadPage, type UpdateInfo } from './update/service';
 import { createLogger } from './util/logger';
@@ -51,9 +52,17 @@ export function registerIpc(context: AppContext): void {
 
   ipcMain.handle('settings:get', () => context.settings.get());
   ipcMain.handle('settings:save', (_event, patch) => {
+    const before = context.settings.get();
     const settings = context.settings.save(patch);
     // MCP 的启停与端口都来自设置，保存后立即同步运行状态。
     void context.mcp.sync().catch((error) => log.warn('MCP 重新加载失败', error));
+    // 只在安全巡检相关设置变化时重建定时器，避免普通设置保存把首次扫描无限推迟。
+    if (
+      before.securityAutoScan !== settings.securityAutoScan ||
+      before.securityScanIntervalHours !== settings.securityScanIntervalHours
+    ) {
+      context.refreshSecuritySchedules();
+    }
     // 主题切换时同步窗口按钮区域配色，避免明亮主题下右上角残留深色块。
     const window = BrowserWindow.getAllWindows()[0];
     if (window) {
@@ -91,6 +100,9 @@ export function registerIpc(context: AppContext): void {
     context.health.remove(id);
     context.tunnels.removeServer(id);
     context.chat.clear(id);
+    context.commands.removeServer(id);
+    context.security.remove(id);
+    context.approvalLog.removeServer(id);
   });
   ipcMain.handle('servers:test', async (_event, input: ServerInput): Promise<TestResult> => {
     const { config, secret } = splitSecret(input);
@@ -137,9 +149,23 @@ export function registerIpc(context: AppContext): void {
   ipcMain.handle('tunnel:stop', (_event, id: string) => context.tunnels.stop(id));
   ipcMain.handle('tunnel:remove', (_event, serverId: string, id: string) => context.tunnels.remove(serverId, id));
 
-  ipcMain.handle('exec', (_event, serverId: string, command: string, options) =>
-    context.ssh.exec(serverId, command, options),
-  );
+  ipcMain.handle('exec', async (_event, serverId: string, command: string, options) => {
+    const result = await context.ssh.exec(serverId, command, options);
+    if (command.trim()) {
+      context.commands.record(serverId, {
+        command,
+        source: 'manual',
+        risk: classifyCommand(command).level,
+        ok: result.exitCode === 0,
+        exitCode: result.exitCode,
+        durationMs: result.durationMs,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        purpose: '手动执行',
+      });
+    }
+    return result;
+  });
 
   ipcMain.handle('monitor:snapshot', (_event, serverId: string) => {
     const data = context.runtime.get(serverId);
@@ -269,6 +295,71 @@ export function registerIpc(context: AppContext): void {
   ipcMain.handle('health:tickets', (_event, serverId: string) => context.health.tickets(serverId));
 
   ipcMain.handle('mcp:info', () => context.mcp.info());
+  ipcMain.handle('mcp:clients', () => context.mcpClients.list());
+  ipcMain.handle('mcp:saveClient', (_event, input) => {
+    if (input.id) {
+      const clients = context.mcpClients.update({ ...input, id: input.id });
+      return { clients };
+    }
+    const created = context.mcpClients.create(input);
+    return { clients: created.clients, token: created.token };
+  });
+  ipcMain.handle('mcp:toggleClient', (_event, id: string, enabled: boolean) =>
+    context.mcpClients.setEnabled(id, enabled),
+  );
+  ipcMain.handle('mcp:rotateClient', (_event, id: string) => {
+    const rotated = context.mcpClients.rotate(id);
+    return { clients: rotated.clients, token: rotated.token };
+  });
+  ipcMain.handle('mcp:removeClient', (_event, id: string) => context.mcpClients.remove(id));
+  ipcMain.handle('mcp:calls', (_event, limit?: number) => context.mcpClients.calls(limit ?? 100));
+
+  ipcMain.handle('commands:list', (_event, serverId: string, query) => context.commands.list(serverId, query));
+  ipcMain.handle('commands:get', (_event, serverId: string, id: string) => context.commands.get(serverId, id));
+  ipcMain.handle('commands:analyze', (_event, serverId: string, id: string) =>
+    context.commands.analyze(serverId, id),
+  );
+  ipcMain.handle('commands:planRollback', (_event, serverId: string, id: string, note?: string) =>
+    context.commands.planRollback(serverId, id, note),
+  );
+  ipcMain.handle('commands:applyRollback', (_event, serverId: string, id: string, approved: boolean) =>
+    context.commands.applyRollback(serverId, id, approved),
+  );
+  ipcMain.handle('commands:remove', (_event, serverId: string, id: string) => context.commands.remove(serverId, id));
+  ipcMain.handle('commands:clear', (_event, serverId: string) => context.commands.clear(serverId));
+
+  ipcMain.handle('approval:rules', () => context.approvals.rules());
+  ipcMain.handle('approval:saveRule', (_event, input) => context.approvals.saveRule(input));
+  ipcMain.handle('approval:toggleRule', (_event, id: string, enabled: boolean) =>
+    context.approvals.toggleRule(id, enabled),
+  );
+  ipcMain.handle('approval:deleteRule', (_event, id: string) => context.approvals.removeRule(id));
+  ipcMain.handle('approval:resetRules', () => context.approvals.resetRules());
+  ipcMain.handle('approval:records', (_event, serverId?: string, limit?: number) =>
+    context.approvalLog.list(serverId, limit ?? 100),
+  );
+  ipcMain.handle('approval:test', (_event, serverId: string, command: string) =>
+    context.approvals.test(serverId, command),
+  );
+
+  ipcMain.handle('security:report', (_event, serverId: string) => context.security.report(serverId));
+  ipcMain.handle('security:scan', (_event, serverId: string) => context.security.scan(serverId, 'manual'));
+  ipcMain.handle('security:resolve', (_event, serverId: string, findingId: string, status) =>
+    context.security.setStatus(serverId, findingId, status),
+  );
+  ipcMain.handle('security:remediate', (_event, serverId: string, findingId: string) =>
+    context.security.remediate(serverId, findingId),
+  );
+  ipcMain.handle('security:apply', (_event, serverId: string, findingId: string, approved: boolean) =>
+    context.security.applyRemediation(serverId, findingId, approved),
+  );
+
+  ipcMain.handle('cluster:precheck', (_event, serverIds: string[], command?: string) =>
+    context.cluster.precheck(serverIds, command),
+  );
+  ipcMain.handle('cluster:run', (_event, input) => context.cluster.run(input));
+  ipcMain.handle('cluster:cancel', (_event, runId: string) => context.cluster.cancel(runId));
+  ipcMain.handle('cluster:history', (_event, limit?: number) => context.cluster.history(limit ?? 20));
 
   ipcMain.handle('update:check', (): Promise<UpdateInfo> => checkForUpdates());
   ipcMain.handle('update:open', (_event, url: string) => openDownloadPage(url));
@@ -277,23 +368,39 @@ export function registerIpc(context: AppContext): void {
     const servers = context.servers.list();
     let totalInput = 0;
     let totalOutput = 0;
+    let totalCached = 0;
+    let totalCacheCreation = 0;
     const rows = servers
       .map((server) => {
         let input = 0;
         let output = 0;
+        let cachedInput = 0;
+        let cacheCreation = 0;
         let messages = 0;
         for (const message of context.chat.list(server.id)) {
           if (!message.usage) continue;
           input += message.usage.inputTokens ?? 0;
           output += message.usage.outputTokens ?? 0;
+          cachedInput += message.usage.cachedInputTokens ?? 0;
+          cacheCreation += message.usage.cacheCreationTokens ?? 0;
           messages += 1;
         }
         totalInput += input;
         totalOutput += output;
-        return { serverId: server.id, name: server.name, input, output, messages };
+        totalCached += cachedInput;
+        totalCacheCreation += cacheCreation;
+        return { serverId: server.id, name: server.name, input, output, cachedInput, cacheCreation, messages };
       })
       .sort((a, b) => b.input + b.output - (a.input + a.output));
-    return { total: { input: totalInput, output: totalOutput }, servers: rows };
+    return {
+      total: {
+        input: totalInput,
+        output: totalOutput,
+        cachedInput: totalCached,
+        cacheCreation: totalCacheCreation,
+      },
+      servers: rows,
+    };
   });
 
   ipcMain.handle('demo:start', () => context.startDemo());

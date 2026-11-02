@@ -3,7 +3,8 @@ import { createServer, type Server as NetServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import type { TunnelConfig, TunnelStatus } from '../../shared/types';
 import type { SshManager } from '../ssh/manager';
-import { JsonStore } from '../store/json-store';
+import type { SubshellDb } from '../store/db';
+import { SqliteStore } from '../store/sqlite-store';
 import { createLogger } from '../util/logger';
 
 const log = createLogger('tunnel');
@@ -29,26 +30,23 @@ export interface TunnelInput {
  */
 export class TunnelService extends EventEmitter {
   private active = new Map<string, ActiveTunnel>();
-  private stores = new Map<string, JsonStore<TunnelConfig[]>>();
+  private stores = new Map<string, SqliteStore<TunnelConfig[]>>();
 
   constructor(
-    private readonly dataDir: string,
+    private readonly db: SubshellDb,
     private readonly ssh: SshManager,
   ) {
     super();
   }
 
-  private store(serverId: string): JsonStore<TunnelConfig[]> {
+  private store(serverId: string): SqliteStore<TunnelConfig[]> {
     const cached = this.stores.get(serverId);
     if (cached) return cached;
-    const store = new JsonStore<TunnelConfig[]>(
-      join(this.dataDir, 'servers', serverId, 'tunnels.json'),
-      () => [],
-      {
-        version: 2,
-        migrate: (data) => (Array.isArray(data) ? (data as TunnelConfig[]) : []),
-      },
-    );
+    const store = new SqliteStore<TunnelConfig[]>(this.db, `tunnels:${serverId}`, () => [], {
+      version: 2,
+      legacyFile: join(this.db.dataDir, 'servers', serverId, 'tunnels.json'),
+      migrate: (data) => (Array.isArray(data) ? (data as TunnelConfig[]) : []),
+    });
     this.stores.set(serverId, store);
     return store;
   }
@@ -189,5 +187,6 @@ export class TunnelService extends EventEmitter {
       if (tunnel.config.serverId === serverId) this.stop(id);
     }
     this.stores.delete(serverId);
+    this.db.deleteDoc(`tunnels:${serverId}`);
   }
 }

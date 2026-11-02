@@ -49,7 +49,10 @@ export class MockProvider implements Provider {
 
   async chat(options: ChatOptions): Promise<ChatResult> {
     const last = options.messages.at(-1);
-    const lastUser = [...options.messages].reverse().find((message) => message.role === 'user')?.content ?? '';
+    const lastUserRaw = [...options.messages].reverse().find((message) => message.role === 'user')?.content ?? '';
+    // Agent 会把实时状态附加到最后一条用户消息；演示模型只看用户原始输入，
+    // 避免「实时指标里出现 CPU」之类的内容误触发别的分支。
+    const lastUser = (lastUserRaw.split(/\n\n## /)[0] ?? lastUserRaw).trim();
 
     // 无工具场景（状态摘要、连通性测试）直接返回文本。
     if (!options.tools.length) {

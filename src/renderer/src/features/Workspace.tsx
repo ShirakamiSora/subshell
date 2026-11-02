@@ -4,12 +4,14 @@ import {
   Ellipsis,
   FolderOpen,
   HeartPulse,
+  History,
   LayoutDashboard,
   MessageSquare,
   Plug,
   PlugZap,
   RefreshCw,
   ScrollText,
+  ShieldCheck,
   TerminalSquare,
   Trash2,
   Unplug,
@@ -26,6 +28,8 @@ import { ConfirmDialog } from '../components/Modal';
 import { Welcome } from './Welcome';
 import { Overview } from './Overview';
 import { HealthView } from './HealthView';
+import { CommandHistoryView } from './CommandHistoryView';
+import { SecurityView } from './SecurityView';
 import { FileBrowser } from './FileBrowser';
 import { TerminalView } from './TerminalView';
 import { Assistant } from './Assistant';
@@ -35,6 +39,8 @@ import type { WorkspaceView } from '../store/app';
 const views: { key: WorkspaceView; labelKey: string; icon: typeof LayoutDashboard }[] = [
   { key: 'overview', labelKey: 'workspace.view.overview', icon: LayoutDashboard },
   { key: 'health', labelKey: 'workspace.view.health', icon: HeartPulse },
+  { key: 'security', labelKey: 'workspace.view.security', icon: ShieldCheck },
+  { key: 'history', labelKey: 'workspace.view.history', icon: History },
   { key: 'file', labelKey: 'workspace.view.files', icon: FolderOpen },
   { key: 'terminal', labelKey: 'workspace.view.terminal', icon: TerminalSquare },
   { key: 'assistant', labelKey: 'workspace.view.assistant', icon: MessageSquare },
@@ -93,6 +99,12 @@ export function Workspace() {
         </div>
         <div className={cn('absolute inset-0', view === 'health' ? 'visible' : 'invisible pointer-events-none')}>
           <HealthView serverId={server.id} />
+        </div>
+        <div className={cn('absolute inset-0', view === 'security' ? 'visible' : 'invisible pointer-events-none')}>
+          <SecurityView serverId={server.id} active={view === 'security'} />
+        </div>
+        <div className={cn('absolute inset-0', view === 'history' ? 'visible' : 'invisible pointer-events-none')}>
+          <CommandHistoryView serverId={server.id} active={view === 'history'} />
         </div>
         <div className={cn('absolute inset-0', view === 'file' ? 'visible' : 'invisible pointer-events-none')}>
           <FileBrowser serverId={server.id} active={view === 'file'} />
@@ -197,13 +209,13 @@ function ServerHeader({ serverId }: { serverId: string }) {
       </div>
 
       <div className="ml-auto flex items-center gap-2">
-        <div className="flex items-center rounded-lg border border-[var(--border)] bg-[var(--panel-2)] p-0.5">
+        <div className="flex items-center overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--panel-2)] p-0.5">
           {views.map((item) => (
             <button
               key={item.key}
               onClick={() => setView(item.key)}
               className={cn(
-                'flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] transition-colors',
+                'flex h-7 flex-none items-center gap-1.5 rounded-md px-2.5 text-[12.5px] transition-colors',
                 view === item.key
                   ? 'bg-[var(--panel-3)] text-[var(--text)] shadow-sm'
                   : 'text-[var(--muted)] hover:text-[var(--text)]',

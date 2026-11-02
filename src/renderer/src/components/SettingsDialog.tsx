@@ -1,7 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Loader2, Plus, RefreshCw, Trash2, Zap } from 'lucide-react';
-import type { ProviderConfig, ProviderInput } from '@shared/types';
+import { Copy, KeyRound, Loader2, Plus, RefreshCw, ShieldCheck, Trash2, Zap } from 'lucide-react';
+import type { McpClient, McpStatus, ProviderConfig, ProviderInput } from '@shared/types';
 import { Modal } from '../components/Modal';
+import { ApprovalRulesDialog } from './ApprovalRulesDialog';
+import { McpClientDialog } from './McpClientDialog';
 import { useApp } from '../store/app';
 import { useI18n } from '../lib/i18n';
 import { api } from '../lib/api';
@@ -213,11 +215,23 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const setActiveProvider = useApp((state) => state.setActiveProvider);
   const notify = useApp((state) => state.notify);
   const [editingProvider, setEditingProvider] = useState<ProviderConfig | 'new' | null>(null);
-  const [mcp, setMcp] = useState<{ running: boolean; port: number; token: string; endpoint: string } | null>(null);
+  const [mcp, setMcp] = useState<McpStatus | null>(null);
+  const [showRules, setShowRules] = useState(false);
+  const [editingClient, setEditingClient] = useState<McpClient | 'new' | null>(null);
+  const [freshToken, setFreshToken] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [update, setUpdate] = useState<{ hasUpdate: boolean; latest: string; url: string; error?: string } | null>(null);
 
   const { t } = useI18n();
+  const servers = useApp((state) => state.servers);
+
+  const refreshMcp = async () => {
+    try {
+      setMcp(await api.mcp.info());
+    } catch {
+      // MCP 信息读取失败不影响设置页
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -394,6 +408,96 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
         <section className="mb-6">
           <div className="mb-2">
+            <h3 className="text-[13.5px] font-semibold text-[var(--text)]">{t('settings.auto.title')}</h3>
+            <p className="text-[12px] text-[var(--muted-2)]">{t('settings.auto.desc')}</p>
+          </div>
+          <div className="divide-y divide-[var(--border)] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--panel-2)]">
+            <SettingRow
+              title={t('settings.auto.smartApproval')}
+              description={t('settings.auto.smartApprovalDesc')}
+            >
+              <Switch
+                checked={settings.smartApprovalEnabled}
+                onChange={(value) => void saveSettings({ smartApprovalEnabled: value })}
+              />
+            </SettingRow>
+            <SettingRow
+              title={t('settings.auto.modelApproval')}
+              description={t('settings.auto.modelApprovalDesc')}
+            >
+              <Switch
+                checked={settings.smartApprovalUseModel}
+                onChange={(value) => void saveSettings({ smartApprovalUseModel: value })}
+              />
+            </SettingRow>
+            <SettingRow title={t('settings.auto.rules')} description={t('settings.auto.rulesDesc')}>
+              <button className="btn h-7 px-2.5 text-[11.5px]" onClick={() => setShowRules(true)}>
+                <ShieldCheck size={11} />
+                {t('settings.auto.manageRules')}
+              </button>
+            </SettingRow>
+            <SettingRow title={t('settings.auto.history')} description={t('settings.auto.historyDesc')}>
+              <Switch
+                checked={settings.commandHistoryEnabled}
+                onChange={(value) => void saveSettings({ commandHistoryEnabled: value })}
+              />
+            </SettingRow>
+            <SettingRow
+              title={t('settings.auto.historyRetention')}
+              description={t('settings.auto.historyRetentionDesc')}
+            >
+              <select
+                className="input h-7 !w-24 text-[12px]"
+                value={settings.commandHistoryRetention}
+                onChange={(event) => void saveSettings({ commandHistoryRetention: Number(event.target.value) })}
+              >
+                {[500, 1000, 2000, 5000, 10000].map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </SettingRow>
+            <SettingRow title={t('settings.auto.security')} description={t('settings.auto.securityDesc')}>
+              <Switch
+                checked={settings.securityAutoScan}
+                onChange={(value) => void saveSettings({ securityAutoScan: value })}
+              />
+            </SettingRow>
+            <SettingRow
+              title={t('settings.auto.securityInterval')}
+              description={t('settings.auto.securityIntervalDesc')}
+            >
+              <select
+                className="input h-7 !w-24 text-[12px]"
+                value={settings.securityScanIntervalHours}
+                onChange={(event) => void saveSettings({ securityScanIntervalHours: Number(event.target.value) })}
+              >
+                {[6, 12, 24, 72, 168].map((value) => (
+                  <option key={value} value={value}>
+                    {t('settings.auto.hours', { value })}
+                  </option>
+                ))}
+              </select>
+            </SettingRow>
+            <SettingRow title={t('settings.auto.cluster')} description={t('settings.auto.clusterDesc')}>
+              <select
+                className="input h-7 !w-20 text-[12px]"
+                value={settings.clusterParallelism}
+                onChange={(event) => void saveSettings({ clusterParallelism: Number(event.target.value) })}
+              >
+                {[2, 4, 8, 16].map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </SettingRow>
+          </div>
+        </section>
+
+        <section className="mb-6">
+          <div className="mb-2">
             <h3 className="text-[13.5px] font-semibold text-[var(--text)]">{t('settings.mcp.title')}</h3>
             <p className="text-[12px] text-[var(--muted-2)]">{t('settings.mcp.desc')}</p>
           </div>
@@ -444,6 +548,114 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               </button>
             </div>
           )}
+
+          <div className="mt-3">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-[12px] font-medium text-[var(--text)]">{t('mcp.clients')}</span>
+              <button className="btn h-7 px-2 text-[11.5px]" onClick={() => setEditingClient('new')}>
+                <Plus size={11} />
+                {t('mcp.addClient')}
+              </button>
+            </div>
+            <p className="mb-1.5 text-[11px] leading-relaxed text-[var(--muted-2)]">{t('mcp.clientsHint')}</p>
+            <div className="space-y-1">
+              {(mcp?.clients ?? []).map((client) => (
+                <div
+                  key={client.id}
+                  className={cn(
+                    'rounded-lg border px-2.5 py-2',
+                    client.enabled
+                      ? 'border-[var(--border)] bg-[var(--panel-2)]'
+                      : 'border-[var(--border)] bg-[var(--panel-2)] opacity-60',
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <KeyRound size={11} className="text-[var(--muted-2)]" />
+                    <span className="text-[12px] text-[var(--text)]">{client.name}</span>
+                    <span className="mono text-[10px] text-[var(--muted-2)]">{client.tokenPrefix}…</span>
+                    <span className="text-[10px] text-[var(--muted-2)]">
+                      {t('mcp.callCount', { count: client.calls })}
+                    </span>
+                    <span className="ml-auto flex items-center gap-1">
+                      <button
+                        className="btn btn-ghost h-6 px-1.5 text-[10.5px]"
+                        title={t('mcp.rotate')}
+                        onClick={() => {
+                          void api.mcp
+                            .rotateClient(client.id)
+                            .then(async (result) => {
+                              setFreshToken(result.token ?? null);
+                              await refreshMcp();
+                              notify('success', t('mcp.tokenRotated'));
+                            })
+                            .catch((error) => notify('error', String(error)));
+                        }}
+                      >
+                        <RefreshCw size={10} />
+                      </button>
+                      <button
+                        className="btn btn-ghost h-6 px-1.5 text-[10.5px]"
+                        onClick={() => setEditingClient(client)}
+                      >
+                        {t('settings.provider.edit')}
+                      </button>
+                      <button
+                        className="btn btn-ghost h-6 px-1.5 text-[10.5px] text-rose-300/80 hover:text-[var(--danger)]"
+                        title={t('common.delete')}
+                        onClick={() => {
+                          void api.mcp
+                            .removeClient(client.id)
+                            .then(() => refreshMcp())
+                            .catch((error) => notify('error', String(error)));
+                        }}
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                      <Switch
+                        checked={client.enabled}
+                        onChange={(value) => {
+                          void api.mcp
+                            .toggleClient(client.id, value)
+                            .then(() => refreshMcp())
+                            .catch((error) => notify('error', String(error)));
+                        }}
+                      />
+                    </span>
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-[var(--muted-2)]">
+                    <span>{client.scopes.map((scope) => t(`mcp.scope.${scope}`)).join(' · ')}</span>
+                    <span>
+                      ·{' '}
+                      {client.servers.length
+                        ? t('mcp.serverCount', { count: client.servers.length })
+                        : t('mcp.allServers')}
+                    </span>
+                  </div>
+                </div>
+              ))}
+              {!mcp?.clients.length && (
+                <p className="text-[11.5px] leading-relaxed text-[var(--muted-2)]">{t('mcp.noClients')}</p>
+              )}
+            </div>
+            {freshToken && (
+              <div className="mt-2 flex items-center gap-2 rounded-lg border border-teal-400/30 bg-teal-400/[0.05] px-2.5 py-2">
+                <code className="mono min-w-0 flex-1 break-all text-[11px] text-[var(--text)]">{freshToken}</code>
+                <button
+                  className="btn h-6 px-2 text-[10.5px]"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(freshToken);
+                    notify('success', t('settings.mcp.copied'));
+                  }}
+                >
+                  <Copy size={10} />
+                  {t('settings.mcp.copy')}
+                </button>
+                <button className="btn btn-ghost h-6 px-1.5 text-[10.5px]" onClick={() => setFreshToken(null)}>
+                  {t('common.close')}
+                </button>
+              </div>
+            )}
+          </div>
         </section>
 
         <section>
@@ -509,6 +721,18 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         <ProviderDialog
           editing={editingProvider === 'new' ? null : editingProvider}
           onClose={() => setEditingProvider(null)}
+        />
+      )}
+
+      {showRules && <ApprovalRulesDialog onClose={() => setShowRules(false)} />}
+
+      {editingClient && (
+        <McpClientDialog
+          client={editingClient === 'new' ? null : editingClient}
+          servers={servers}
+          endpoint={mcp?.endpoint ?? 'http://127.0.0.1:3929/mcp'}
+          onClose={() => setEditingClient(null)}
+          onSaved={(clients) => setMcp((current) => (current ? { ...current, clients } : current))}
         />
       )}
     </>
